@@ -140,16 +140,28 @@ async def btc_usd(services: Services) -> Decimal:
 # ---------------------------------------------------------------- chain access
 
 
+def rpc_urls(settings, network: str) -> list[str]:
+    """The configured endpoints for a network: one URL or a list, tried in order."""
+    value = json.loads(settings.opossum_evm_rpc).get(network)
+    urls = [value] if isinstance(value, str) else list(value or [])
+    return [u for u in urls if isinstance(u, str) and u]
+
+
 async def _rpc(services: Services, network: str, method: str, params: list):
-    urls = json.loads(services.settings.opossum_evm_rpc)
-    url = urls.get(network)
-    if not url:
+    urls = rpc_urls(services.settings, network)
+    if not urls:
         raise OpError(503, "chain_unavailable", f"no RPC endpoint configured for {network}")
-    resp = await services.http.post(url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, timeout=15.0)
-    body = resp.json()
-    if "error" in body:
-        raise httpx.HTTPError(f"rpc error: {body['error']}")
-    return body["result"]
+    last: Exception | None = None
+    for url in urls:  # public nodes sit behind load balancers and sometimes refuse a query; try the next provider
+        try:
+            resp = await services.http.post(url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, timeout=15.0)
+            body = resp.json()
+            if not isinstance(body, dict) or "error" in body or "result" not in body:
+                raise httpx.HTTPError(f"{method} refused by {httpx.URL(url).host}: {body.get('error') if isinstance(body, dict) else 'bad reply'}")
+            return body["result"]
+        except (httpx.HTTPError, ValueError) as exc:
+            last = exc
+    raise httpx.HTTPError(str(last)[:300])
 
 
 async def evm_block(services: Services, network: str) -> int:

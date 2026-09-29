@@ -372,3 +372,13 @@ async def test_live_selftest_reads_real_chain_shapes_without_writing(app, client
     assert not out["usdc-polygon"]["ok"] and "polygon" in out["usdc-polygon"]["error"]  # no RPC configured in this test
     async with app.state.services.db.session() as session:
         assert (await session.scalar(select(func.count()).select_from(OpTransaction))) == 0
+
+
+async def test_rpc_falls_back_to_the_next_provider(app, upstream, chain):
+    services = app.state.services
+    services.settings.opossum_evm_rpc = json.dumps({"base": ["https://flaky.test/bad", "https://base.test/rpc"]})
+    upstream.on("/bad", lambda req: httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "invalid block range params"}}))
+    assert await chains.evm_block(services, "base") == chain.evm_tip
+    services.settings.opossum_evm_rpc = json.dumps({"base": ["https://flaky.test/bad"]})
+    with pytest.raises(httpx.HTTPError, match="invalid block range"):
+        await chains.evm_block(services, "base")

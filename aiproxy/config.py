@@ -167,10 +167,13 @@ class Settings(BaseSettings):
     # production; the defaults are public endpoints with rate limits.
     opossum_chain_enabled: bool = True
     opossum_btc_api: str = "https://mempool.space/api"
+    # JSON map of network -> URL or list of URLs (tried in order).
     opossum_evm_rpc: str = (
-        '{"ethereum": "https://ethereum-rpc.publicnode.com", "base": "https://base-rpc.publicnode.com", '
-        '"polygon": "https://polygon-bor-rpc.publicnode.com", "arbitrum": "https://arbitrum-one-rpc.publicnode.com", '
-        '"optimism": "https://optimism-rpc.publicnode.com"}'
+        '{"ethereum": ["https://ethereum-rpc.publicnode.com", "https://eth.drpc.org"], '
+        '"base": ["https://base-rpc.publicnode.com", "https://mainnet.base.org"], '
+        '"polygon": ["https://polygon-bor-rpc.publicnode.com", "https://polygon.drpc.org", "https://polygon-rpc.com"], '
+        '"arbitrum": ["https://arbitrum-one-rpc.publicnode.com", "https://arb1.arbitrum.io/rpc"], '
+        '"optimism": ["https://optimism-rpc.publicnode.com", "https://mainnet.optimism.io"]}'
     )
     opossum_price_api: str = "https://api.coinbase.com/v2/prices/{pair}/spot"
     opossum_btc_confirmations: int = 2

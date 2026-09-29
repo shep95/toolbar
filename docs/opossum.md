@@ -319,7 +319,7 @@ A public blockchain shows the amount, the sending wallet and the receiving addre
 
 - **Chain data:**
   - Bitcoin is watched through an Esplora API (`OPOSSUM_BTC_API`, default mempool.space).
-  - USDC is watched through JSON-RPC nodes (`OPOSSUM_EVM_RPC`, a JSON map; defaults are public rate-limited endpoints).
+  - USDC is watched through JSON-RPC nodes (`OPOSSUM_EVM_RPC`, a JSON map of network to one URL or a list tried in order; defaults are public rate-limited endpoints with a fallback each).
   - In production, use your own node or a paid provider.
 - **Price:** comes from `OPOSSUM_PRICE_API` (Coinbase spot).
 - **Watch cadence:** payments are checked on the maintenance cycle, every 30 s.
