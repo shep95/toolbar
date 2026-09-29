@@ -89,7 +89,7 @@ def main() -> int:
 
         # --- keys and rejections ---------------------------------------------
         stamp = int(time.time())
-        r = c.post("/admin/api/users", json={"email": f"smoke-{stamp}@example.invalid", "initial_balance": "1.00"}, headers=admin)
+        r = c.post("/admin/api/users", json={"email": f"smoke-{stamp}@example.com", "initial_balance": "1.00"}, headers=admin)
         if not check("create user", r.status_code == 201, f"HTTP {r.status_code}"):
             return summary()
         user = r.json()
@@ -108,19 +108,24 @@ def main() -> int:
         r = c.get("/v1/models", headers=auth)
         check("model list", r.status_code == 200, f"{len(r.json().get('data', []))} models" if r.status_code == 200 else r.text[:80])
 
-        chat = {"model": "openai/gpt-5-mini", "messages": [{"role": "user", "content": "hi"}]}
+        # These checks need a provider that is switched on; none of them reaches it.
+        probe = args.model[0] if args.model else (f"{configured[0]}/smoke-test-model" if configured else "openai/x")
+        chat = {"model": probe, "messages": [{"role": "user", "content": "hi"}]}
         r = c.post("/v1/chat/completions", json=chat, headers={"Authorization": "Bearer sk-proj-" + "x" * 40})
         check("provider keys are refused", r.status_code == 401, f"HTTP {r.status_code}")
-        r = c.post("/v1/chat/completions", json={**chat, "n": 5}, headers=auth)
-        check("cost-amplification guard (n=5)", r.status_code == 400, f"HTTP {r.status_code}")
+        if configured:
+            r = c.post("/v1/chat/completions", json={**chat, "n": 5}, headers=auth)
+            check("cost-amplification guard (n=5)", r.status_code == 400, f"HTTP {r.status_code}")
 
-        r = c.post("/admin/api/users", json={"email": f"smoke-empty-{stamp}@example.invalid"}, headers=admin)
-        empty = r.json()
-        created_users.append(empty["id"])
-        r = c.post(f"/admin/api/users/{empty['id']}/keys", json={"provider": "any"}, headers=admin)
-        created_keys.append(r.json()["id"])
-        r = c.post("/v1/chat/completions", json=chat, headers={"Authorization": f"Bearer {r.json()['api_key']}"})
-        check("zero balance is refused before any provider call", r.status_code == 402, f"HTTP {r.status_code}")
+            r = c.post("/admin/api/users", json={"email": f"smoke-empty-{stamp}@example.com"}, headers=admin)
+            empty = r.json()
+            created_users.append(empty["id"])
+            r = c.post(f"/admin/api/users/{empty['id']}/keys", json={"provider": "any"}, headers=admin)
+            created_keys.append(r.json()["id"])
+            r = c.post("/v1/chat/completions", json=chat, headers={"Authorization": f"Bearer {r.json()['api_key']}"})
+            check("zero balance is refused before any provider call", r.status_code == 402, f"HTTP {r.status_code}")
+        else:
+            print("SKIP  cost guard and zero-balance checks (no provider has credentials yet)")
 
         # --- real billed calls -------------------------------------------------
         balance = Decimal("1.00")
