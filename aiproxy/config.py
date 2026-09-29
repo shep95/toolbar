@@ -97,6 +97,12 @@ class Settings(BaseSettings):
     # apply it when a request sets no limit.
     max_output_tokens: int = 0
 
+    # --- general transactions -----------------------------------------------
+    # By default a transaction's fee follows the account's country (set by an
+    # admin). Set this to price by the country each transaction reports; only
+    # do so for accounts you trust, since the caller chooses that country.
+    price_by_transaction_country: bool = False
+
     # A transaction still "pending" after this long is treated as abandoned:
     # it is marked "error" and its reserved fee is refunded.
     pending_timeout_minutes: int = 60

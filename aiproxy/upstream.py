@@ -48,6 +48,7 @@ class Caller:
     key_prefix: str
     key_provider: str
     rate_limit_per_minute: int
+    country: str | None = None
 
 
 class _Progress:
@@ -89,6 +90,7 @@ async def forward(
             model=model,
             endpoint=endpoint,
             request_id=request_id,
+            country=caller.country,
         )
     except BillingRejected as exc:
         raise GatewayError(exc.status_code, exc.outcome, exc.message) from None
@@ -145,7 +147,11 @@ async def _call_upstream(
     stream_handler: StreamHandler | None,
     progress: _Progress,
 ) -> Response:
-    base_headers = {"X-Request-Id": request_id, "X-Transaction-Id": str(reservation.transaction_id)}
+    base_headers = {
+        "X-Request-Id": request_id,
+        "X-Transaction-Id": str(reservation.transaction_id),
+        "X-Fee-Country": reservation.fee_country or "default",
+    }
 
     # 2. Call the provider.
     start = time.monotonic()

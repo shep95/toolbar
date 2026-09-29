@@ -142,7 +142,10 @@ async def test_admin_usage_views(client, make_user, upstream):
     await client.post("/v1/chat/completions", json=CHAT, headers={"Authorization": "Bearer apx_" + "a" * 43})
 
     overview = (await client.get("/admin/api/overview", headers=ADMIN)).json()
-    assert overview["last_24h"] == {"requests": 2, "successful": 2, "revenue": "0.060000", "tokens": 24}
+    assert overview["last_24h"] == {
+        "requests": 2, "successful": 2, "revenue": "0.060000", "tokens": 24,
+        "transactions": 0, "transaction_revenue": "0.000000", "total_revenue": "0.060000",
+    }
     assert overview["providers"]["openai"]["configured"] is True
     assert "sk-" not in json.dumps(overview)
 
@@ -300,3 +303,14 @@ async def test_other_stripe_sales_are_ignored(client, make_user, database):
     r = await client.post("/stripe/webhook", content=payload, headers={"Stripe-Signature": sign_stripe_payload(payload, "whsec_test")})
     assert r.status_code == 200 and r.json()["ignored"] == "not a paid top-up"
     assert await balance_of(database, user) == Decimal("0")
+
+
+async def test_local_currency_payment_is_credited_in_usd(client, make_user, database):
+    user, _ = await make_user(balance="0")
+    event = json.loads(checkout_event(user["id"], session_id="cs_inr", cents=2000))
+    event["data"]["object"]["presentment_details"] = {"presentment_amount": 165000, "presentment_currency": "inr"}
+    payload = json.dumps(event).encode()
+    r = await client.post("/stripe/webhook", content=payload, headers={"Stripe-Signature": sign_stripe_payload(payload, "whsec_test")})
+    assert r.json()["credited"] == "20"
+    detail = (await client.get(f"/admin/api/users/{user['id']}", headers=ADMIN)).json()
+    assert "customer paid 1650.00 INR" in detail["balance_adjustments"][0]["note"]

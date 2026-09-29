@@ -30,6 +30,7 @@ class CachedKey:
     key_prefix: str
     key_provider: str
     rate_limit_per_minute: int | None
+    country: str | None = None
 
 
 class AuthCache:

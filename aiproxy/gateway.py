@@ -24,6 +24,7 @@ from sqlalchemy.exc import DBAPIError
 
 from .audit import record_rejection
 from .connectors import Connector, UnsupportedRequest
+from .countries import plain
 from .db import DB_UNAVAILABLE_ERRORS
 from .errors import GatewayError, error_response
 from .keycache import CachedKey
@@ -94,7 +95,7 @@ async def _lookup_key(services: Services, key_hash: str):
     stmt = (
         select(
             ApiKey.id, ApiKey.user_id, ApiKey.status, ApiKey.provider, ApiKey.rate_limit_per_minute,
-            ApiKey.key_prefix, User.status,
+            ApiKey.key_prefix, User.status, User.country,
         )
         .join(User, User.id == ApiKey.user_id)
         .where(ApiKey.key_hash == key_hash)
@@ -132,6 +133,7 @@ async def authenticate(services: Services, request: Request) -> Caller:
         caller = Caller(
             api_key_id=cached.api_key_id, user_id=cached.user_id, key_prefix=cached.key_prefix,
             key_provider=cached.key_provider, rate_limit_per_minute=cached.rate_limit_per_minute or default_limit,
+            country=cached.country,
         )
         request.state.caller = caller
         return caller
@@ -144,17 +146,17 @@ async def authenticate(services: Services, request: Request) -> Caller:
 
     if row is None:
         raise GatewayError(401, "invalid_key", "invalid API key", detail=f"unknown key {display_prefix(raw_key)}")
-    key_id, user_id, key_status, key_provider, key_limit, key_prefix, user_status = row
+    key_id, user_id, key_status, key_provider, key_limit, key_prefix, user_status, user_country = row
     caller = Caller(
         api_key_id=key_id, user_id=user_id, key_prefix=key_prefix, key_provider=key_provider,
-        rate_limit_per_minute=key_limit or default_limit,
+        rate_limit_per_minute=key_limit or default_limit, country=user_country,
     )
     request.state.caller = caller
     if key_status != KeyStatus.ACTIVE:
         raise GatewayError(401, "key_revoked", "this API key has been revoked")
     if user_status != UserStatus.ACTIVE:
         raise GatewayError(403, "user_suspended", "account is suspended")
-    services.auth_cache.put(key_hash, CachedKey(key_id, user_id, key_prefix, key_provider, key_limit))
+    services.auth_cache.put(key_hash, CachedKey(key_id, user_id, key_prefix, key_provider, key_limit, user_country))
     return caller
 
 
@@ -433,12 +435,20 @@ async def account(request: Request) -> Response:
         if key is None or key.status != KeyStatus.ACTIVE:
             raise GatewayError(401, "key_revoked", "this API key has been revoked")
         last_used = services.key_usage.last_seen(key.id) or key.last_used_at
+        multiplier = await services.billing.country_multiplier(user.country)
+        base = await services.billing.price_for("transactions", None)
         return json_response(
             {
                 "user_id": str(user.id),
                 "email": user.email,
                 "balance": f"{user.balance:.6f}",
                 "status": user.status,
+                "country": user.country,
+                "fees": {
+                    "currency": "USD",
+                    "country_multiplier": plain(multiplier),
+                    "per_transaction": f"{base.scaled(multiplier).fee_for(None):.6f}",
+                },
                 "key": {
                     "id": str(key.id),
                     "prefix": key.key_prefix,

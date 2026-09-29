@@ -116,6 +116,28 @@ def main() -> int:
         r = c.get("/v1/models", headers=auth)
         check("model list", r.status_code == 200, f"{len(r.json().get('data', []))} models" if r.status_code == 200 else r.text[:80])
 
+        # --- general transactions and country-adjusted fees ----------------------
+        spent = Decimal("0")
+        ref = f"smoke-tx-{stamp}"
+        body = {"reference": ref, "type": "payment", "amount": "250", "currency": "EUR", "country": "DE"}
+        r = c.post("/v1/transactions", json=body, headers=auth)
+        ok = r.status_code == 201 and r.json()["fee"]["amount_usd"] == "0.030000"
+        check("record a transaction (base fee $0.03)", ok, r.text[:120] if not ok else "")
+        if ok:
+            spent += Decimal("0.03")
+        r = c.post("/v1/transactions", json=body, headers=auth)
+        check("same reference is not charged twice", r.status_code == 200 and r.json().get("replayed") is True,
+              f"HTTP {r.status_code}")
+        r = c.patch(f"/admin/api/users/{user['id']}", json={"country": "IN"}, headers=admin)
+        r = c.post("/v1/transactions", json={**body, "reference": ref + "-in"}, headers=auth)
+        ok = r.status_code == 201 and r.json()["fee"]["amount_usd"] == "0.010500"
+        check("fee adjusts to the account's country (IN: $0.0105)", ok, r.text[:120] if not ok else "")
+        if ok:
+            spent += Decimal("0.0105")
+        c.patch(f"/admin/api/users/{user['id']}", json={"country": None}, headers=admin)
+        r = c.get("/v1/transactions", params={"reference": ref}, headers=auth)
+        check("transactions can be listed", r.status_code == 200 and len(r.json().get("data", [])) == 1)
+
         # These checks need a provider that is switched on; none of them reaches it.
         probe = args.model[0] if args.model else (f"{configured[0]}/smoke-test-model" if configured else "openai/x")
         chat = {"model": probe, "messages": [{"role": "user", "content": "hi"}]}
@@ -142,7 +164,7 @@ def main() -> int:
             print("SKIP  Stripe checks (pass --webhook-secret or set STRIPE_WEBHOOK_SECRET)")
 
         # --- real billed calls -------------------------------------------------
-        balance = Decimal("1.00")
+        balance = Decimal("1.00") - spent
         for model in args.model:
             r = c.post(
                 "/v1/chat/completions",

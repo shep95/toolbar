@@ -1,11 +1,66 @@
-# AI API Proxy
+# Transaction Fee Platform
 
-A universal AI API proxy. Your users call one endpoint with a key you issued.
-The proxy routes each request to any of 40 built-in AI providers across 11
-countries, or to any other OpenAI-compatible API you add. It charges $0.03 per
-completed round trip, tracks usage, and manages user keys and balances.
+A prepaid, per-transaction fee platform with a built-in universal AI API
+gateway.
 
-Built with Python (FastAPI) and PostgreSQL.
+- **Any kind of transaction.** Apps record payments, orders, transfers, bookings or anything else through one API. Each transaction is charged a small fee from the account's prepaid balance.
+- **AI requests.** Users call 40 built-in AI providers across 11 countries through one key, and each completed request is a transaction too.
+- **Fair worldwide.** The base fee is $0.03 in high-income economies and scales down with each country's World Bank income group, to as little as $0.006.
+- **Prepaid balances.** Users top up by card through Stripe Checkout, which can show the price in their own currency.
+
+Built with Python (FastAPI) and PostgreSQL. It runs live on Railway: see
+[docs/railway.md](docs/railway.md).
+
+## Transactions API
+
+Record any transaction. The platform does not move the transaction's money.
+It records the transaction and charges the fee.
+
+```bash
+curl https://your-host.example/v1/transactions \
+  -H "Authorization: Bearer apx_..." -H "Content-Type: application/json" \
+  -d '{"reference": "order-1001", "type": "order", "amount": "49.90", "currency": "EUR", "country": "DE"}'
+```
+
+```json
+{"id": "…", "reference": "order-1001", "type": "order", "amount": "49.9", "currency": "EUR", "country": "DE",
+ "fee": {"amount_usd": "0.030000", "country": null, "multiplier": "1"}, "balance_remaining_usd": "9.970000",
+ "replayed": false, "created_at": "…"}
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `reference` | yes | Your own ID for the transaction. Sending the same reference again returns the original record and is never charged twice, so retries are safe. Reusing it for a different transaction returns 409. |
+| `type` | no | Any label, such as `payment`, `order`, `transfer` or `booking`. Defaults to `transaction`. Admins can price types differently. |
+| `amount`, `currency` | no | The transaction's own value, in any ISO 4217 currency, kept for your records |
+| `country` | no | Where the transaction happened (ISO 3166 alpha-2), kept for your records |
+| `description`, `metadata` | no | Up to 500 characters, and up to 20 simple key/value pairs |
+
+Other endpoints:
+
+- `GET /v1/transactions` lists the account's own transactions, filtered by `?reference=` and limited by `?limit=`.
+- `GET /v1/account` shows the balance, the account's country and its current per-transaction fee.
+
+Refusals: an unknown or revoked key gets 401, a suspended account 403, and a
+balance too low for the fee 402. Nothing is recorded or charged in those
+cases.
+
+## Fees by country
+
+The fee is the base price times the country's multiplier:
+
+| World Bank income group | Multiplier | Fee | Examples |
+|---|---|---|---|
+| High income | 1.00 | $0.0300 | US, Canada, EU, UK, Japan, Korea, Australia, Gulf states |
+| Upper-middle income | 0.60 | $0.0180 | Brazil, Mexico, China, South Africa, Türkiye, Indonesia |
+| Lower-middle income | 0.35 | $0.0105 | India, Nigeria, Pakistan, Egypt, Philippines, Vietnam |
+| Low income | 0.20 | $0.0060 | Ethiopia, Uganda, Afghanistan, Mozambique |
+
+- **Who decides the country.** It is set per account by an admin, never by the user, so nobody can claim a cheaper country. An account with no country pays the full fee, and so does any unlisted country.
+- **The same rule for AI requests.** They are adjusted the same way, and responses carry `X-Fee-Country`.
+- **Overrides.** Admins can override any country in the dashboard's **Fees by country** panel, for example when the World Bank reclassifies a country each July. The table lives in `aiproxy/countries.py`.
+- **Pricing by transaction country.** Set `PRICE_BY_TRANSACTION_COUNTRY=true` to price each transaction by the `country` it reports instead. Only do this for accounts you trust, since the caller chooses that country.
+- **Local-currency payments.** Balances and fees are kept in US dollars. Customers can still pay top-ups in their own currency: switch on **Adaptive Pricing** in the Stripe dashboard under Settings → Payments. Stripe then shows the local price and still settles in USD, and the ledger notes what the customer actually paid.
 
 ## Providers
 
@@ -60,7 +115,7 @@ travel in plaintext.
 | Upstream connector | `aiproxy/upstream.py` + `aiproxy/connectors/` | Makes the real provider call and handles the response, including streaming. `catalog.py` describes every provider. |
 | Admin layer | `aiproxy/admin.py` + `aiproxy/static/admin.html` | Users, keys, balances, pricing, usage dashboard and audit log, behind a separate admin token. |
 
-## Using the proxy
+## Using the AI gateway
 
 ### Unified endpoint: OpenAI format for every provider
 
@@ -107,7 +162,8 @@ None of these are billed:
 
 ## The fee
 
-Each completed round trip is charged a flat $0.03. A round trip runs from
+Each completed AI round trip is charged the transaction fee: $0.03, adjusted
+for the account's country as above. A round trip runs from
 the user's request, through the provider, to the response delivered back. The
 fee is reserved before the provider is called and settled once the response
 is out.

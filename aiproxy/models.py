@@ -70,6 +70,10 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     balance: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"), nullable=False)
     status: Mapped[str] = mapped_column(String(16), default=UserStatus.ACTIVE, nullable=False)
+    # ISO 3166-1 alpha-2 country used for country-adjusted fees. Set by an
+    # admin, never by the user, so nobody can claim a cheaper country.
+    # NULL means unknown: the full base fee applies.
+    country: Mapped[str | None] = mapped_column(String(2))
 
     api_keys: Mapped[list[ApiKey]] = relationship(back_populates="user", lazy="raise")
 
@@ -121,6 +125,9 @@ class Transaction(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     error: Mapped[str | None] = mapped_column(Text)
     request_id: Mapped[str | None] = mapped_column(String(64))
+    # Country whose economy the fee was adjusted for, and the multiplier used.
+    fee_country: Mapped[str | None] = mapped_column(String(2))
+    fee_multiplier: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
 
     __table_args__ = (
         CheckConstraint(
@@ -180,3 +187,48 @@ class AuditLog(Base):
     status_code: Mapped[int] = mapped_column(Integer, nullable=False)
     outcome: Mapped[str] = mapped_column(String(64), nullable=False)
     detail: Mapped[str | None] = mapped_column(Text)
+
+
+class Charge(Base):
+    """A fee charged for any kind of transaction recorded through /v1/transactions.
+
+    The proxy does not move the transaction's money; it records that the
+    transaction happened and charges the per-transaction fee to the account's
+    prepaid balance. ``reference`` is the caller's own ID for the transaction
+    and makes recording idempotent: the same reference is never charged twice.
+    """
+
+    __tablename__ = "charges"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    api_key_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("api_keys.id", ondelete="CASCADE"), nullable=False)
+    reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    type: Mapped[str] = mapped_column(String(64), nullable=False)
+    # The transaction's own value, for the caller's records (not moved by us).
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    currency: Mapped[str | None] = mapped_column(String(3))
+    country: Mapped[str | None] = mapped_column(String(2))
+    description: Mapped[str | None] = mapped_column(String(500))
+    metadata_json: Mapped[str | None] = mapped_column(Text)
+    fee_charged: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    fee_country: Mapped[str | None] = mapped_column(String(2))
+    fee_multiplier: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    request_id: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "reference", name="uq_charges_user_reference"),
+        Index("ix_charges_ts", "timestamp"),
+        Index("ix_charges_user_ts", "user_id", "timestamp"),
+    )
+
+
+class CountryPricing(Base):
+    """Admin override of the fee multiplier for one country."""
+
+    __tablename__ = "country_pricing"
+
+    country: Mapped[str] = mapped_column(String(2), primary_key=True)
+    multiplier: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

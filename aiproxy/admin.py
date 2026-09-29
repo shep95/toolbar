@@ -26,9 +26,21 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import case, func, select, update
 from sqlalchemy.exc import IntegrityError
 
+from .countries import (
+    DEFAULT_MULTIPLIERS,
+    INCOME_GROUP,
+    MAX_MULTIPLIER,
+    MIN_MULTIPLIER,
+    default_multiplier,
+    income_group,
+    normalise_country,
+    plain,
+)
 from .models import (
     PROVIDER_ANY,
     ApiKey,
+    Charge,
+    CountryPricing,
     AuditLog,
     BalanceAdjustment,
     KeyStatus,
@@ -40,6 +52,7 @@ from .models import (
 )
 from .security import constant_time_equals, display_prefix, generate_api_key, hash_api_key
 from .services import Services, get_services
+from .transactions_api import charge_json
 
 log = logging.getLogger("aiproxy.admin")
 
@@ -108,13 +121,32 @@ def _iso(value: datetime | None) -> str | None:
 # ---------------------------------------------------------------- schemas
 
 
+def _country_field(value):
+    try:
+        return normalise_country(value)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from None
+
+
 class UserCreate(BaseModel):
     email: EmailStr
     initial_balance: Decimal = Field(default=Decimal("0"), ge=0, le=MAX_AMOUNT)
+    # ISO country for country-adjusted fees; omit for the full base fee.
+    country: str | None = None
+
+    _check_country = field_validator("country")(classmethod(lambda cls, v: _country_field(v)))
 
 
 class UserUpdate(BaseModel):
-    status: Literal["active", "suspended"]
+    status: Literal["active", "suspended"] | None = None
+    # Send null to clear (full base fee).
+    country: str | None = None
+
+    _check_country = field_validator("country")(classmethod(lambda cls, v: _country_field(v)))
+
+
+class CountryPricingUpsert(BaseModel):
+    multiplier: Decimal = Field(ge=MIN_MULTIPLIER, le=MAX_MULTIPLIER)
 
 
 class CreditRequest(BaseModel):
@@ -155,6 +187,7 @@ def _user_json(user: User) -> dict:
         "email": user.email,
         "balance": _money(user.balance),
         "status": user.status,
+        "country": user.country,
         "created_at": _iso(user.created_at),
     }
 
@@ -233,6 +266,16 @@ async def overview(services: Services = Depends(require_admin)):
                 "revenue": _money(row[2]),
                 "tokens": int(row[3]),
             }
+            charges = (
+                await session.execute(
+                    select(func.count(Charge.id), func.coalesce(func.sum(Charge.fee_charged), 0)).where(
+                        Charge.timestamp >= now - delta
+                    )
+                )
+            ).one()
+            windows[label]["transactions"] = charges[0]
+            windows[label]["transaction_revenue"] = _money(charges[1])
+            windows[label]["total_revenue"] = _money(Decimal(row[2] or 0) + Decimal(charges[1] or 0))
         pending = (
             await session.execute(select(func.count(Transaction.id)).where(Transaction.status == TxStatus.PENDING))
         ).scalar_one()
@@ -252,6 +295,88 @@ async def providers(services: Services = Depends(require_admin)):
     return [c.describe() for c in services.connectors.values()]
 
 
+# ---------------------------------------------------------------- countries
+
+
+@api.get("/countries")
+async def country_pricing(services: Services = Depends(require_admin)):
+    """Default multipliers per income group, every classified country, and admin overrides."""
+    base = await services.billing.price_for("transactions", None)
+    async with services.db.session() as session:
+        overrides = (await session.execute(select(CountryPricing).order_by(CountryPricing.country))).scalars().all()
+    return {
+        "base_fee_usd": _money(base.fee_for(None)),
+        "groups": {
+            group: {"multiplier": str(m), "fee_usd": _money(base.scaled(m).fee_for(None))}
+            for group, m in DEFAULT_MULTIPLIERS.items()
+        },
+        "countries": {code: group for code, group in sorted(INCOME_GROUP.items())},
+        "unlisted_countries": "high",
+        "overrides": [
+            {
+                "country": o.country,
+                "multiplier": plain(o.multiplier),
+                "fee_usd": _money(base.scaled(Decimal(o.multiplier)).fee_for(None)),
+                "default_group": income_group(o.country),
+                "updated_at": _iso(o.updated_at),
+            }
+            for o in overrides
+        ],
+    }
+
+
+@api.put("/countries/{country}")
+async def set_country_pricing(country: str, payload: CountryPricingUpsert, services: Services = Depends(require_admin)):
+    try:
+        code = normalise_country(country)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    async with services.db.session() as session, session.begin():
+        row = await session.get(CountryPricing, code)
+        if row is None:
+            row = CountryPricing(country=code, multiplier=payload.multiplier)
+            session.add(row)
+        row.multiplier = payload.multiplier
+        row.updated_at = utcnow()
+    services.billing.invalidate_pricing()
+    log.info("country pricing set", extra={"event": "admin_country_pricing", "country": code, "multiplier": str(payload.multiplier)})
+    return {"country": code, "multiplier": str(payload.multiplier)}
+
+
+@api.delete("/countries/{country}")
+async def delete_country_pricing(country: str, services: Services = Depends(require_admin)):
+    try:
+        code = normalise_country(country)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    async with services.db.session() as session, session.begin():
+        row = await session.get(CountryPricing, code)
+        if row is None:
+            raise HTTPException(404, "no override for that country")
+        await session.delete(row)
+    services.billing.invalidate_pricing()
+    return {"country": code, "multiplier": str(default_multiplier(code)), "reset_to_default": True}
+
+
+@api.get("/charges")
+async def list_charges(
+    services: Services = Depends(require_admin),
+    user_id: uuid.UUID | None = None,
+    type: str | None = Query(default=None, max_length=64),
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+):
+    """General transactions recorded through /v1/transactions."""
+    stmt = select(Charge).order_by(Charge.timestamp.desc()).limit(limit).offset(offset)
+    if user_id:
+        stmt = stmt.where(Charge.user_id == user_id)
+    if type:
+        stmt = stmt.where(Charge.type == type)
+    async with services.db.session() as session:
+        rows = (await session.execute(stmt)).scalars().all()
+    return [{**charge_json(c), "user_id": str(c.user_id), "api_key_id": str(c.api_key_id)} for c in rows]
+
+
 # ---------------------------------------------------------------- users
 
 
@@ -259,7 +384,7 @@ async def providers(services: Services = Depends(require_admin)):
 async def create_user(payload: UserCreate, services: Services = Depends(require_admin)):
     try:
         async with services.db.session() as session, session.begin():
-            user = User(email=payload.email.lower(), balance=payload.initial_balance)
+            user = User(email=payload.email.lower(), balance=payload.initial_balance, country=payload.country)
             session.add(user)
             await session.flush()
             if payload.initial_balance:
@@ -325,9 +450,17 @@ async def get_user(user_id: uuid.UUID, services: Services = Depends(require_admi
 async def update_user(user_id: uuid.UUID, payload: UserUpdate, services: Services = Depends(require_admin)):
     async with services.db.session() as session, session.begin():
         user = await _get_user(session, user_id)
-        user.status = payload.status
+        if "status" in payload.model_fields_set:
+            if payload.status is None:
+                raise HTTPException(422, "status must be active or suspended")
+            user.status = payload.status
+        if "country" in payload.model_fields_set:
+            user.country = payload.country
     services.auth_cache.clear()
-    log.info("user status changed", extra={"event": "admin_user_status", "user_id": str(user_id), "status": payload.status})
+    log.info(
+        "user updated",
+        extra={"event": "admin_user_update", "user_id": str(user_id), "fields": sorted(payload.model_fields_set)},
+    )
     return _user_json(user)
 
 
@@ -416,7 +549,8 @@ async def list_pricing(services: Services = Depends(require_admin)):
 @api.put("/pricing")
 async def upsert_pricing(payload: PricingUpsert, services: Services = Depends(require_admin)):
     provider = payload.provider
-    if provider != "*":
+    # "transactions" prices general transactions; its model is the transaction type.
+    if provider not in ("*", "transactions"):
         _valid_provider(services, provider, allow_any=False)
     async with services.db.session() as session, session.begin():
         row = (
@@ -522,19 +656,35 @@ async def usage(
                 .limit(20)
             )
         ).all()
+        charge_day = func.date(Charge.timestamp)
+        charge_filters = [Charge.timestamp >= since] + ([Charge.user_id == user_id] if user_id else [])
+        charge_daily = (
+            await session.execute(
+                select(charge_day, func.count(Charge.id), func.coalesce(func.sum(Charge.fee_charged), 0))
+                .where(*charge_filters)
+                .group_by(charge_day)
+                .order_by(charge_day)
+            )
+        ).all()
+    rows = [
+        {
+            "day": str(r[0]),
+            "provider": r[1],
+            "requests": r[2],
+            "successful": int(r[3]),
+            "revenue": _money(r[4]),
+            "tokens": int(r[5]),
+        }
+        for r in daily
+    ] + [
+        # General transactions appear as their own line.
+        {"day": str(r[0]), "provider": "transactions", "requests": r[1], "successful": r[1], "revenue": _money(r[2]), "tokens": 0}
+        for r in charge_daily
+    ]
+    rows.sort(key=lambda r: (r["day"], r["provider"]))
     return {
         "days": days,
-        "daily": [
-            {
-                "day": str(r[0]),
-                "provider": r[1],
-                "requests": r[2],
-                "successful": int(r[3]),
-                "revenue": _money(r[4]),
-                "tokens": int(r[5]),
-            }
-            for r in daily
-        ],
+        "daily": rows,
         "top_users": [
             {"user_id": str(r[0]), "email": r[1], "requests": r[2], "revenue": _money(r[3])} for r in top_users
         ],

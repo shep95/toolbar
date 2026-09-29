@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import admin, gateway, payments
+from . import admin, gateway, payments, transactions_api
 from .billing import BillingEngine
 from .config import Settings, get_settings
 from .connectors import build_connectors
@@ -224,6 +224,7 @@ def create_app(
             return {"ok": True, "database": "up"}
         return JSONResponse(status_code=503, content={"ok": False, "database": "down"})
 
+    app.include_router(transactions_api.router)
     app.include_router(gateway.router)
     app.include_router(payments.router)
     app.include_router(admin.api)

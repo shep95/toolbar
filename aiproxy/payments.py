@@ -123,6 +123,21 @@ async def create_checkout(request: Request) -> Response:
     return await run_request(request, work)
 
 
+def _note(event: dict, obj: dict) -> str:
+    """Ledger note; records the local currency the customer paid in, if any.
+
+    With Stripe Adaptive Pricing a customer abroad pays in their own currency
+    while the session amount stays in USD; Stripe reports what they actually
+    paid in ``presentment_details``.
+    """
+    note = f"stripe event {event.get('id')}"
+    presented = obj.get("presentment_details") or {}
+    amount, currency = presented.get("presentment_amount"), presented.get("presentment_currency")
+    if isinstance(amount, int) and isinstance(currency, str) and currency.lower() != "usd":
+        note += f"; customer paid {amount / 100:.2f} {currency.upper()}"
+    return note[:500]
+
+
 @router.post("/stripe/webhook", include_in_schema=False)
 async def stripe_webhook(request: Request) -> Response:
     services = get_services(request)
@@ -175,7 +190,7 @@ async def stripe_webhook(request: Request) -> Response:
                 raise LookupError(str(user_id))
             session.add(
                 BalanceAdjustment(
-                    user_id=user_id, amount=amount, source="stripe", external_id=str(obj.get("id")), note=f"stripe event {event.get('id')}"
+                    user_id=user_id, amount=amount, source="stripe", external_id=str(obj.get("id")), note=_note(event, obj)
                 )
             )
             await session.flush()  # unique external_id: raises if already credited

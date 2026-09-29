@@ -30,11 +30,23 @@ from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import and_, exists, select, text, update
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from .connectors import Usage
 from .db import Database
-from .models import ApiKey, KeyStatus, Pricing, Transaction, TxStatus, User, UserStatus, utcnow
+from .countries import default_multiplier
+from .models import (
+    ApiKey,
+    Charge,
+    CountryPricing,
+    KeyStatus,
+    Pricing,
+    Transaction,
+    TxStatus,
+    User,
+    UserStatus,
+    utcnow,
+)
 
 log = logging.getLogger("aiproxy.billing")
 
@@ -60,6 +72,11 @@ class Price:
             fee += self.fee_per_1k_tokens * Decimal(tokens) / Decimal(1000)
         return fee.quantize(SIX_PLACES, rounding=ROUND_HALF_UP)
 
+    def scaled(self, multiplier: Decimal) -> Price:
+        if multiplier == 1:
+            return self
+        return Price(self.fee_per_request * multiplier, self.fee_per_1k_tokens * multiplier)
+
 
 @dataclass(frozen=True)
 class Reservation:
@@ -68,6 +85,15 @@ class Reservation:
     price: Price
     reserved: Decimal
     balance_after: Decimal
+    fee_country: str | None = None
+    fee_multiplier: Decimal = Decimal("1")
+
+
+@dataclass(frozen=True)
+class ChargeResult:
+    charge: Charge
+    balance_after: Decimal | None
+    replay: bool
 
 
 @dataclass(frozen=True)
@@ -91,10 +117,38 @@ _PG_RESERVE = text(
         RETURNING balance
     ), t AS (
         INSERT INTO transactions
-            (id, user_id, api_key_id, provider, model_called, endpoint, fee_charged, timestamp, status, request_id)
+            (id, user_id, api_key_id, provider, model_called, endpoint, fee_charged, timestamp, status, request_id,
+             fee_country, fee_multiplier)
         SELECT CAST(:txid AS uuid), CAST(:uid AS uuid), CAST(:kid AS uuid), CAST(:provider AS varchar),
                CAST(:model AS varchar), CAST(:endpoint AS varchar), CAST(:fee AS numeric), now(),
-               'pending', CAST(:rid AS varchar)
+               'pending', CAST(:rid AS varchar), CAST(:fcountry AS varchar), CAST(:fmult AS numeric)
+        FROM u
+        RETURNING id
+    )
+    SELECT balance FROM u
+    """
+)
+
+_PG_CHARGE = text(
+    """
+    WITH u AS (
+        UPDATE users SET balance = balance - CAST(:fee AS numeric)
+        WHERE id = CAST(:uid AS uuid)
+          AND status = 'active'
+          AND balance > 0
+          AND balance >= CAST(:fee AS numeric)
+          AND EXISTS (SELECT 1 FROM api_keys k WHERE k.id = CAST(:kid AS uuid) AND k.status = 'active')
+          AND NOT EXISTS (SELECT 1 FROM charges c WHERE c.user_id = CAST(:uid AS uuid) AND c.reference = CAST(:ref AS varchar))
+        RETURNING balance
+    ), c AS (
+        INSERT INTO charges
+            (id, user_id, api_key_id, reference, type, amount, currency, country, description, metadata_json,
+             fee_charged, fee_country, fee_multiplier, timestamp, request_id)
+        SELECT CAST(:cid AS uuid), CAST(:uid AS uuid), CAST(:kid AS uuid), CAST(:ref AS varchar),
+               CAST(:type AS varchar), CAST(:amount AS numeric), CAST(:currency AS varchar),
+               CAST(:country AS varchar), CAST(:description AS varchar), CAST(:meta AS text),
+               CAST(:fee AS numeric), CAST(:fcountry AS varchar), CAST(:fmult AS numeric), now(),
+               CAST(:rid AS varchar)
         FROM u
         RETURNING id
     )
@@ -152,6 +206,8 @@ class BillingEngine:
         self._autocommit = db.engine.execution_options(isolation_level="AUTOCOMMIT") if self.fast else None
         self._price_cache: dict[tuple[str, str], tuple[Price, float]] = {}
         self._pricing_ttl = pricing_cache_seconds
+        self._country_overrides: dict[str, Decimal] = {}
+        self._country_overrides_expire = 0.0
 
     async def _pg(self, statement, params: dict):
         """Run one auto-committed statement; retry once if the pooled connection was dead.
@@ -173,6 +229,19 @@ class BillingEngine:
 
     def invalidate_pricing(self) -> None:
         self._price_cache.clear()
+        self._country_overrides_expire = 0.0
+
+    async def country_multiplier(self, country: str | None) -> Decimal:
+        """Admin override for the country if any, else its income-group default."""
+        if not country:
+            return Decimal("1")
+        now = time.monotonic()
+        if self._country_overrides_expire <= now:
+            async with self.db.session() as session:
+                rows = (await session.execute(select(CountryPricing.country, CountryPricing.multiplier))).all()
+            self._country_overrides = {c: Decimal(m) for c, m in rows}
+            self._country_overrides_expire = now + self._pricing_ttl
+        return self._country_overrides.get(country, default_multiplier(country))
 
     async def price_for(self, provider: str, model: str | None) -> Price:
         key = (provider, model or "*")
@@ -215,8 +284,10 @@ class BillingEngine:
         model: str | None,
         endpoint: str,
         request_id: str,
+        country: str | None = None,
     ) -> Reservation:
-        price = await self.price_for(provider, model)
+        multiplier = await self.country_multiplier(country)
+        price = (await self.price_for(provider, model)).scaled(multiplier)
         reserved = price.fee_for(None)
         tx_id = uuid.uuid4()
         model = model[:200] if model else None
@@ -226,18 +297,24 @@ class BillingEngine:
                 {
                     "fee": reserved, "uid": user_id, "kid": api_key_id, "txid": tx_id,
                     "provider": provider, "model": model, "endpoint": endpoint[:100], "rid": request_id,
+                    "fcountry": country, "fmult": multiplier,
                 },
             )
             balance_after = row[0] if row else None
         else:
-            balance_after = await self._reserve_portable(user_id, api_key_id, provider, model, endpoint, request_id, reserved, tx_id)
+            balance_after = await self._reserve_portable(
+                user_id, api_key_id, provider, model, endpoint, request_id, reserved, tx_id, country, multiplier
+            )
         if balance_after is None:
             raise await self._rejection_reason(user_id, api_key_id)
         return Reservation(
-            transaction_id=tx_id, user_id=user_id, price=price, reserved=reserved, balance_after=Decimal(balance_after)
+            transaction_id=tx_id, user_id=user_id, price=price, reserved=reserved, balance_after=Decimal(balance_after),
+            fee_country=country, fee_multiplier=multiplier,
         )
 
-    async def _reserve_portable(self, user_id, api_key_id, provider, model, endpoint, request_id, reserved, tx_id):
+    async def _reserve_portable(
+        self, user_id, api_key_id, provider, model, endpoint, request_id, reserved, tx_id, country, multiplier
+    ):
         async with self.db.session() as session, session.begin():
             balance_after = (
                 await session.execute(
@@ -261,6 +338,7 @@ class BillingEngine:
                 Transaction(
                     id=tx_id, user_id=user_id, api_key_id=api_key_id, provider=provider, model_called=model,
                     endpoint=endpoint[:100], fee_charged=reserved, status=TxStatus.PENDING, request_id=request_id,
+                    fee_country=country, fee_multiplier=multiplier,
                 )
             )
             return balance_after
@@ -274,6 +352,102 @@ class BillingEngine:
         if user_status != UserStatus.ACTIVE:
             return BillingRejected(403, "user_suspended", "account is suspended")
         return BillingRejected(402, "insufficient_balance", "insufficient balance; top up to continue")
+
+    # ------------------------------------------------------------ general transactions
+
+    async def record_charge(
+        self,
+        *,
+        user_id: uuid.UUID,
+        api_key_id: uuid.UUID,
+        reference: str,
+        type: str,
+        amount: Decimal | None,
+        currency: str | None,
+        country: str | None,
+        description: str | None,
+        metadata_json: str | None,
+        fee_country: str | None,
+        request_id: str,
+    ) -> ChargeResult:
+        """Charge the fee for one transaction and record it, exactly once per reference.
+
+        Debit and record happen in one atomic step. Repeating a reference
+        returns the original record without charging again.
+        """
+        existing = await self._find_charge(user_id, reference)
+        if existing is not None:
+            return ChargeResult(existing, None, replay=True)
+
+        multiplier = await self.country_multiplier(fee_country)
+        fee = (await self.price_for("transactions", type)).scaled(multiplier).fee_for(None)
+        charge = Charge(
+            id=uuid.uuid4(), user_id=user_id, api_key_id=api_key_id, reference=reference, type=type,
+            amount=amount, currency=currency, country=country, description=description,
+            metadata_json=metadata_json, fee_charged=fee, fee_country=fee_country, fee_multiplier=multiplier,
+            request_id=request_id,
+        )
+        try:
+            if self.fast:
+                row = await self._pg(
+                    _PG_CHARGE,
+                    {
+                        "fee": fee, "uid": user_id, "kid": api_key_id, "ref": reference, "cid": charge.id,
+                        "type": type, "amount": amount, "currency": currency, "country": country,
+                        "description": description, "meta": metadata_json, "fcountry": fee_country,
+                        "fmult": multiplier, "rid": request_id,
+                    },
+                )
+                balance_after = row[0] if row else None
+            else:
+                balance_after = await self._charge_portable(charge)
+        except IntegrityError:
+            balance_after = None  # a concurrent request with the same reference won the race
+        if balance_after is None:
+            existing = await self._find_charge(user_id, reference)
+            if existing is not None:
+                return ChargeResult(existing, None, replay=True)
+            raise await self._rejection_reason(user_id, api_key_id)
+        charge.timestamp = charge.timestamp or utcnow()
+        return ChargeResult(charge, Decimal(balance_after), replay=False)
+
+    async def _charge_portable(self, charge: Charge):
+        async with self.db.session() as session, session.begin():
+            duplicate = (
+                await session.execute(
+                    select(Charge.id).where(Charge.user_id == charge.user_id, Charge.reference == charge.reference)
+                )
+            ).first()
+            if duplicate:
+                return None
+            balance_after = (
+                await session.execute(
+                    update(User)
+                    .where(
+                        and_(
+                            User.id == charge.user_id,
+                            User.status == UserStatus.ACTIVE,
+                            User.balance > 0,
+                            User.balance >= charge.fee_charged,
+                            exists().where(ApiKey.id == charge.api_key_id, ApiKey.status == KeyStatus.ACTIVE),
+                        )
+                    )
+                    .values(balance=User.balance - charge.fee_charged)
+                    .returning(User.balance)
+                )
+            ).scalar_one_or_none()
+            if balance_after is None:
+                return None
+            session.add(charge)
+            await session.flush()
+            session.expunge(charge)
+            return balance_after
+
+    async def _find_charge(self, user_id: uuid.UUID, reference: str) -> Charge | None:
+        async with self.db.session() as session:
+            return (
+                await session.execute(select(Charge).where(Charge.user_id == user_id, Charge.reference == reference))
+            ).scalar_one_or_none()
 
     # ------------------------------------------------------------ settle
 

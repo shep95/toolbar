@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <link rel="icon" href="data:,">
-<title>Proxy Admin</title>
+<title>Fee Platform Admin</title>
 <style>
   :root {
     --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #5f6b7a; --border: #dde1e6;
@@ -57,7 +57,7 @@
 </head>
 <body>
 <header>
-  <h1>AI API Proxy · Admin</h1>
+  <h1>Transaction Fee Platform · Admin</h1>
   <form id="login" autocomplete="off">
     <input id="token" type="password" placeholder="Admin token" aria-label="Admin token" autocomplete="new-password">
     <button class="primary">Connect</button>
@@ -81,13 +81,19 @@
         <form id="newUser">
           <input name="email" type="email" placeholder="email" required>
           <input name="initial_balance" type="number" step="0.01" min="0" placeholder="starting balance $">
+          <input name="country" maxlength="2" placeholder="country (US, IN…)" aria-label="country">
           <button class="primary">Create user</button>
         </form>
-        <div class="scroll"><table id="users"><thead><tr><th>Email</th><th>Balance</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>
+        <div class="scroll"><table id="users"><thead><tr><th>Email</th><th>Balance</th><th>Country</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>
       </section>
 
       <section id="userPanel" class="hidden">
         <h2 id="userTitle">User</h2>
+        <p class="muted" id="userFee"></p>
+        <form id="country">
+          <input name="country" maxlength="2" placeholder="country code (blank = full fee)" aria-label="country">
+          <button>Set country</button>
+        </form>
         <form id="credit">
           <input name="amount" type="number" step="0.01" placeholder="amount $ (negative to debit)" required>
           <input name="note" placeholder="note">
@@ -119,7 +125,23 @@
     </section>
 
     <section style="margin-top:16px">
-      <h2>Recent transactions</h2>
+      <h2>Fees by country</h2>
+      <p class="muted" id="countrySummary"></p>
+      <form id="countryOverride">
+        <input name="country" maxlength="2" placeholder="country code" required aria-label="country">
+        <input name="multiplier" type="number" step="0.01" min="0.01" max="10" placeholder="multiplier (1 = full fee)" required>
+        <button class="primary">Save override</button>
+      </form>
+      <div class="scroll"><table id="overrides"><thead><tr><th>Country</th><th>Default group</th><th>Multiplier</th><th>Fee</th><th></th></tr></thead><tbody></tbody></table></div>
+    </section>
+
+    <section style="margin-top:16px">
+      <h2>Recent transactions (all types)</h2>
+      <div class="scroll"><table id="charges"><thead><tr><th>Time</th><th>User</th><th>Type</th><th>Reference</th><th>Amount</th><th>Country</th><th>Fee</th></tr></thead><tbody></tbody></table></div>
+    </section>
+
+    <section style="margin-top:16px">
+      <h2>Recent AI requests</h2>
       <div class="scroll"><table id="txs"><thead><tr><th>Time</th><th>User</th><th>Provider</th><th>Model</th><th>Tokens</th><th>Fee</th><th>Status</th><th>Latency</th></tr></thead><tbody></tbody></table></div>
     </section>
 
@@ -171,8 +193,9 @@
     const o = await api('/overview');
     const cards = [
       ['Users', o.users], ['Active keys', o.active_keys], ['Pending tx', o.pending_transactions],
-      ['Requests 24h', o.last_24h.requests], ['Revenue 24h', money(o.last_24h.revenue)],
-      ['Requests 30d', o.last_30d.requests], ['Revenue 30d', money(o.last_30d.revenue)], ['Tokens 30d', o.last_30d.tokens],
+      ['Transactions 24h', o.last_24h.transactions], ['AI requests 24h', o.last_24h.requests],
+      ['Revenue 24h', money(o.last_24h.total_revenue)], ['Transactions 30d', o.last_30d.transactions],
+      ['AI requests 30d', o.last_30d.requests], ['Revenue 30d', money(o.last_30d.total_revenue)],
     ];
     const wrap = $('#cards'); wrap.replaceChildren();
     cards.forEach(([l, v]) => {
@@ -218,7 +241,7 @@
     users = await api('/users?limit=200');
     fill('#users', users, (u, tr) => {
       if (selected && selected.id === u.id) tr.className = 'sel';
-      tr.append(cell(u.email), cell(money(u.balance)), cell(u.status, pill(u.status)));
+      tr.append(cell(u.email), cell(money(u.balance)), cell(u.country || '—'), cell(u.status, pill(u.status)));
       const td = document.createElement('td'); td.appendChild(button('Open', () => openUser(u.id))); tr.appendChild(td);
     });
   }
@@ -228,6 +251,10 @@
     $('#userPanel').classList.remove('hidden');
     $('#newSecret').classList.add('hidden');
     $('#userTitle').textContent = selected.email + ' · ' + money(selected.balance);
+    $('#country').elements.country.value = selected.country || '';
+    $('#userFee').textContent = selected.country
+      ? 'Fees adjusted for ' + selected.country + ' (see Fees by country).'
+      : 'No country set: full base fee applies.';
     $('#toggleStatus').textContent = selected.status === 'active' ? 'Suspend user' : 'Reactivate user';
     $('#toggleStatus').className = selected.status === 'active' ? 'danger' : '';
     fill('#keys', selected.keys, (k, tr) => {
@@ -253,8 +280,26 @@
     });
   }
 
+  async function loadCountries() {
+    const c = await api('/countries');
+    const g = c.groups;
+    $('#countrySummary').textContent = 'Base fee ' + money(c.base_fee_usd) + '. By World Bank income group: high ' +
+      money(g.high.fee_usd) + ', upper-middle ' + money(g.upper_middle.fee_usd) + ', lower-middle ' +
+      money(g.lower_middle.fee_usd) + ', low ' + money(g.low.fee_usd) + '. Unknown countries pay the base fee.';
+    fill('#overrides', c.overrides, (o, tr) => {
+      tr.append(cell(o.country), cell(o.default_group), cell(o.multiplier), cell(money(o.fee_usd)));
+      const td = document.createElement('td');
+      td.appendChild(button('Reset', () => guard(async () => { await api('/countries/' + o.country, { method: 'DELETE' }); await loadCountries(); }), 'danger'));
+      tr.appendChild(td);
+    });
+  }
+
   async function loadActivity() {
     const byId = Object.fromEntries(users.map((u) => [u.id, u.email]));
+    const charges = await api('/charges?limit=50');
+    fill('#charges', charges, (t, tr) => tr.append(
+      cell(when(t.created_at)), cell(byId[t.user_id] || t.user_id.slice(0, 8)), cell(t.type), cell(t.reference),
+      cell(t.amount != null ? t.amount + ' ' + (t.currency || '') : ''), cell(t.country || ''), cell(money(t.fee.amount_usd))));
     const txs = await api('/transactions?limit=50');
     fill('#txs', txs, (t, tr) => tr.append(
       cell(when(t.timestamp)), cell(byId[t.user_id] || t.user_id.slice(0, 8)), cell(t.provider), cell(t.model_called),
@@ -267,7 +312,7 @@
   async function guard(fn) { try { msg(''); await fn(); } catch (e) { msg(e.message, true); } }
   async function refresh() {
     await guard(async () => {
-      await loadOverview(); await loadProviders(); await loadUsers(); await loadPricing(); await loadActivity();
+      await loadOverview(); await loadProviders(); await loadUsers(); await loadPricing(); await loadCountries(); await loadActivity();
       $('#app').classList.remove('hidden'); msg('');
     });
   }
@@ -285,8 +330,24 @@
   $('#newUser').addEventListener('submit', (e) => {
     e.preventDefault(); const d = formData(e.target);
     guard(async () => {
-      const u = await api('/users', { method: 'POST', body: JSON.stringify({ email: d.email, initial_balance: d.initial_balance || '0' }) });
+      const body = { email: d.email, initial_balance: d.initial_balance || '0' };
+      if (d.country) body.country = d.country;
+      const u = await api('/users', { method: 'POST', body: JSON.stringify(body) });
       e.target.reset(); await openUser(u.id); await loadOverview();
+    });
+  });
+  $('#country').addEventListener('submit', (e) => {
+    e.preventDefault(); const d = formData(e.target);
+    guard(async () => {
+      await api('/users/' + selected.id, { method: 'PATCH', body: JSON.stringify({ country: d.country ? d.country : null }) });
+      await openUser(selected.id);
+    });
+  });
+  $('#countryOverride').addEventListener('submit', (e) => {
+    e.preventDefault(); const d = formData(e.target);
+    guard(async () => {
+      await api('/countries/' + encodeURIComponent(d.country.trim()), { method: 'PUT', body: JSON.stringify({ multiplier: d.multiplier }) });
+      e.target.reset(); await loadCountries();
     });
   });
   $('#credit').addEventListener('submit', (e) => {
