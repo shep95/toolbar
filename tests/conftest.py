@@ -21,6 +21,7 @@ ADMIN_TOKEN = "admin-" + "x" * 40
 OPENAI_KEY = "sk-upstream-openai-secret-000000000000"
 ANTHROPIC_KEY = "sk-ant-upstream-secret"
 MISTRAL_KEY = "mistralupstreamsecret0000000000"
+OPOSSUM_MASTER_KEY = "b3Bvc3N1bS10ZXN0LW1hc3Rlci1rZXktMDAwMDAwMDAwMA"
 
 
 class FakeUpstream:
@@ -64,6 +65,7 @@ def make_settings(**overrides) -> Settings:
         stripe_secret_key="sk_test_stripe",
         stripe_webhook_secret="whsec_test",
         stripe_api_base="https://api.stripe.test/v1",
+        opossum_master_key=OPOSSUM_MASTER_KEY,
     )
     values.update(overrides)
     return Settings(_env_file=None, **values)

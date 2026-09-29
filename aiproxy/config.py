@@ -125,6 +125,37 @@ class Settings(BaseSettings):
     stripe_min_topup_usd: Decimal = Decimal("5")
     stripe_max_topup_usd: Decimal = Decimal("1000")
 
+    # --- Opossum Protocol ---------------------------------------------------
+    # One random secret (base64url, 32+ bytes); receipt signing, vault
+    # encryption and pseudonym keys are all derived from it. Opossum is off
+    # (503) until it is set. Generate: python -m aiproxy gen-opossum-key
+    opossum_master_key: SecretStr | None = None
+    opossum_fee_percent: Decimal = Decimal("3")
+    # The processor's fee as quoted to users (Stripe US cards: 2.9% + 0.30).
+    opossum_processor_fee_percent: Decimal = Decimal("2.9")
+    opossum_processor_fee_flat: Decimal = Decimal("0.30")
+    opossum_currencies: str = "USD,EUR,GBP,CAD,AUD"
+    # Sandbox recipients settle instantly with test money and say so on every
+    # receipt. Turn off to allow only real processors.
+    opossum_sandbox_enabled: bool = True
+    opossum_seed_sandbox_recipients: bool = True
+    # Payments need an authenticator app on the account.
+    opossum_require_mfa: bool = True
+    opossum_kdf_iterations: int = 600_000
+    opossum_session_idle_minutes: int = 30
+    opossum_session_max_hours: int = 12
+    opossum_max_backup_bytes: int = 5_000_000
+    opossum_payments_per_hour: int = 20
+    opossum_signin_failures_per_minute_per_ip: int = 10
+    # Defaults for countries without their own row in op_jurisdictions.
+    opossum_unverified_tx_limit: Decimal = Decimal("500")
+    opossum_unverified_daily_limit: Decimal = Decimal("1000")
+    opossum_verified_tx_limit: Decimal = Decimal("10000")
+    opossum_retention_days: int = 1825
+    # Countries payments may not come from or go to (ISO codes). Review this
+    # against the sanctions rules that apply to you; it is not legal advice.
+    opossum_blocked_countries: str = "CU,IR,KP,SY"
+
     log_level: str = "INFO"
 
     @field_validator("database_url")

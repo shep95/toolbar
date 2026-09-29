@@ -34,6 +34,7 @@ log = logging.getLogger("aiproxy.payments")
 router = APIRouter()
 
 TOPUP_PURPOSE = "aiproxy_topup"
+OPOSSUM_PURPOSE = "opossum_payment"
 SIGNATURE_TOLERANCE_SECONDS = 300
 MAX_WEBHOOK_BYTES = 1_000_000
 
@@ -195,9 +196,16 @@ async def stripe_webhook(request: Request) -> Response:
         event = json.loads(payload)
     except ValueError:
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
-    if event.get("type") not in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
+    if event.get("type") not in ("checkout.session.completed", "checkout.session.async_payment_succeeded", "checkout.session.expired"):
         return JSONResponse({"received": True, "ignored": event.get("type")})
     obj = (event.get("data") or {}).get("object") or {}
+    if (obj.get("metadata") or {}).get("purpose") == OPOSSUM_PURPOSE:
+        from .opossum.relay import settle_from_stripe
+
+        try:
+            return JSONResponse(await settle_from_stripe(services, event.get("type"), obj))
+        except DB_UNAVAILABLE_ERRORS:
+            return JSONResponse({"error": "temporarily unavailable"}, status_code=503)
     if obj.get("payment_status") != "paid" or (obj.get("metadata") or {}).get("purpose") != TOPUP_PURPOSE:
         return JSONResponse({"received": True, "ignored": "not a paid top-up"})
     if (obj.get("currency") or "").lower() != "usd":

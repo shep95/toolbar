@@ -253,3 +253,7 @@ class AdminSession(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ip: Mapped[str | None] = mapped_column(String(64))
     user_agent: Mapped[str | None] = mapped_column(String(200))
+
+
+# Opossum tables share this metadata so create_all and the tests see them.
+from .opossum import models as _opossum_models  # noqa: E402,F401

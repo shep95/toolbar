@@ -87,9 +87,9 @@ def check_host(request: Request, services: Services) -> None:
         raise HTTPException(404, "not found")
 
 
-def check_same_origin(request: Request) -> None:
-    """403 unless a state-changing cookie request comes from the dashboard itself."""
-    if request.headers.get(CSRF_HEADER) != "1":
+def check_same_origin(request: Request, header: str = CSRF_HEADER) -> None:
+    """403 unless a state-changing cookie request comes from the page itself."""
+    if request.headers.get(header) != "1":
         raise HTTPException(403, "missing dashboard request header")
     site = request.headers.get("sec-fetch-site")
     if site is not None and site != "same-origin":

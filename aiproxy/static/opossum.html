@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#070914">
+<meta name="description" content="move money without unnecessarily exposing your financial life.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23070914'/%3E%3Ccircle cx='16' cy='17' r='8' fill='none' stroke='%23ff9a5a' stroke-width='2'/%3E%3Ccircle cx='13' cy='15' r='1.5' fill='%23eef0f8'/%3E%3Ccircle cx='19' cy='15' r='1.5' fill='%23eef0f8'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/opossum/app.css">
+<title>opossum</title>
+</head>
+<body class="locked">
+<img class="scene" src="/opossum/scene.svg" alt="" aria-hidden="true">
+<div class="veil" aria-hidden="true"></div>
+
+<!-- ============================================================ gate -->
+<main id="gate" class="layer gate">
+  <div class="gate-card">
+    <h1 class="wordmark">opossum<span>ledger</span></h1>
+    <p class="lede">move money without unnecessarily exposing your financial life. keep your own record. decide what you reveal.</p>
+
+    <div class="tabs" role="tablist" id="gateTabs">
+      <button type="button" role="tab" data-gate="signin" aria-selected="true">sign in</button>
+      <button type="button" role="tab" data-gate="signup" aria-selected="false">create account</button>
+      <button type="button" role="tab" data-gate="recover" aria-selected="false">recover</button>
+    </div>
+
+    <form id="signin" data-panel="signin" autocomplete="off" novalidate>
+      <div class="fields">
+        <label class="field full"><span>email</span><input name="email" type="email" required autocomplete="username"></label>
+        <label class="field full"><span>password</span><input name="password" type="password" required autocomplete="current-password"></label>
+        <label class="field full" hidden id="signinTotpField"><span>authenticator code</span><input name="totp" inputmode="numeric" maxlength="6" autocomplete="one-time-code"></label>
+      </div>
+      <button class="btn solid" type="submit">sign in</button>
+    </form>
+
+    <form id="signup" data-panel="signup" autocomplete="off" novalidate hidden>
+      <div class="fields">
+        <label class="field full"><span>email</span><input name="email" type="email" required autocomplete="username"></label>
+        <label class="field full"><span>password (12+ characters; it also encrypts your ledger)</span><input name="password" type="password" minlength="12" required autocomplete="new-password"></label>
+        <label class="field full"><span>password again</span><input name="password2" type="password" minlength="12" required autocomplete="new-password"></label>
+        <label class="field"><span>country (sets legal limits)</span><input name="country" maxlength="2" required placeholder="us, gb, in…" autocomplete="off"></label>
+        <label class="field"><span>this device's name</span><input name="device" maxlength="40" required autocomplete="off"></label>
+      </div>
+      <button class="btn solid" type="submit">create account</button>
+    </form>
+
+    <form id="recover" data-panel="recover" autocomplete="off" novalidate hidden>
+      <p class="faint">lost your phone or password? your recovery code unlocks your ledger backup and lets you set a new password. every other device is signed out.</p>
+      <div class="fields">
+        <label class="field full"><span>email</span><input name="email" type="email" required autocomplete="username"></label>
+        <label class="field full"><span>recovery code</span><input name="code" required autocomplete="off" spellcheck="false" placeholder="xxxx-xxxx-xxxx-xxxx-xxxx-xxxx"></label>
+        <label class="field full"><span>new password (12+ characters)</span><input name="password" type="password" minlength="12" required autocomplete="new-password"></label>
+        <label class="field full"><span>this device's name</span><input name="device" maxlength="40" required autocomplete="off"></label>
+      </div>
+      <button class="btn solid" type="submit">recover account</button>
+    </form>
+
+    <form id="unlock" data-panel="unlock" autocomplete="off" novalidate hidden>
+      <p class="faint" id="unlockWho"></p>
+      <div class="fields">
+        <label class="field full"><span>password</span><input name="password" type="password" required autocomplete="current-password"></label>
+      </div>
+      <button class="btn solid" type="submit">unlock ledger</button>
+      <button class="btn quiet small" type="button" id="unlockOther">use another account</button>
+    </form>
+
+    <div id="recoveryShow" hidden>
+      <h3>your recovery code</h3>
+      <p class="faint">write this down and keep it somewhere safe, away from this device. it is the only way back into your ledger if you lose this device and your password. it is shown once; opossum cannot recover it for you.</p>
+      <div class="recovery-code" id="recoveryCode"></div>
+      <div class="actions">
+        <button class="btn small" type="button" id="recoveryDownload">download recovery kit</button>
+        <label class="check"><input type="checkbox" id="recoverySaved"> i have stored it safely</label>
+      </div>
+      <button class="btn solid" type="button" id="recoveryDone" disabled>continue</button>
+    </div>
+
+    <p id="gateMsg" class="msg" role="status" aria-live="polite"></p>
+    <p class="fine">your password never leaves this device. it derives two keys here: one proves who you are, the other encrypts your ledger. the server stores neither. <a href="/opossum/verify">verify a receipt</a></p>
+  </div>
+</main>
+
+<!-- ============================================================ app -->
+<div id="app" class="layer" hidden>
+  <header class="topbar">
+    <p class="wordmark">opossum<span>ledger</span></p>
+    <span class="spacer"></span>
+    <span class="beacon"><i aria-hidden="true"></i><span id="beaconText">ledger unlocked</span></span>
+    <span class="faint" id="saveState"></span>
+    <button type="button" class="btn small" id="lockBtn">lock</button>
+  </header>
+
+  <div class="shell">
+    <nav class="rooms" id="rooms" aria-label="rooms">
+      <button type="button" data-room="overview">overview</button>
+      <button type="button" data-room="pay">pay</button>
+      <button type="button" data-room="ledger">ledger</button>
+      <button type="button" data-room="budgets">budgets</button>
+      <button type="button" data-room="reports">reports</button>
+      <button type="button" data-room="receipts">receipts</button>
+      <button type="button" data-room="privacy">privacy</button>
+      <button type="button" data-room="security">security</button>
+    </nav>
+
+    <main>
+      <!-- overview -->
+      <section class="room" data-room="overview" id="room-overview" hidden>
+        <header><h2 tabindex="-1">overview</h2><p class="lede">your money, computed here on your device. none of this is sent anywhere.</p></header>
+        <div class="stack">
+          <div class="panel">
+            <div class="hero">
+              <div><div class="big" id="ovBalance">—</div><div class="cap">balance across your accounts</div></div>
+              <div><div class="big" id="ovMonth">—</div><div class="cap">spent this month</div></div>
+            </div>
+            <svg class="chart" id="ovChart" viewBox="0 0 600 150" preserveAspectRatio="none" role="img" aria-label="spending per day, last 30 days"><g></g></svg>
+          </div>
+          <div class="metrics" id="ovMetrics"></div>
+          <div class="split">
+            <div class="panel"><h3>upcoming</h3><p class="note">recurring payments expected in the next 30 days.</p><div class="scroll"><table id="ovUpcoming"><thead><tr><th>date</th><th>merchant</th><th class="num">amount</th><th>every</th></tr></thead><tbody></tbody></table></div></div>
+            <div class="panel"><h3>budgets this month</h3><div id="ovBudgets"></div></div>
+          </div>
+          <div class="panel"><h3>recent</h3><div class="scroll"><table id="ovRecent"><thead><tr><th>date</th><th>merchant</th><th>category</th><th class="num">amount</th><th></th></tr></thead><tbody></tbody></table></div></div>
+        </div>
+      </section>
+
+      <!-- pay -->
+      <section class="room" data-room="pay" id="room-pay" hidden>
+        <header><h2 tabindex="-1">pay</h2><p class="lede">the recipient meets the opossum relay, not you. choose, per payment, how much they learn.</p></header>
+        <div class="split">
+          <form id="payForm" class="panel" novalidate>
+            <h3>payment</h3>
+            <p class="note" id="payInvoiceNote">pick a recipient, or paste an invoice id.</p>
+            <div class="fields">
+              <label class="field wide"><span>recipient</span><select name="recipient" id="payRecipient" required></select></label>
+              <label class="field"><span>invoice (optional)</span><input name="invoice" id="payInvoice" autocomplete="off" placeholder="inv_…"></label>
+            </div>
+            <div class="fields">
+              <label class="field"><span>amount</span><input name="amount" id="payAmount" inputmode="decimal" required placeholder="0.00"></label>
+              <label class="field"><span>currency</span><select name="currency" id="payCurrency"></select></label>
+              <label class="field"><span>type</span><select name="type" id="payType"></select></label>
+              <label class="field"><span>fees paid by</span><select name="fee_bearer"><option value="recipient">recipient</option><option value="payer">me, on top</option></select></label>
+            </div>
+            <hr class="divider">
+            <h3>what the recipient sees</h3>
+            <p class="note" id="modeNote"></p>
+            <div class="fields">
+              <label class="field wide"><span>privacy mode</span><select name="mode" id="payMode">
+                <option value="private">private · a one-time id; nothing else</option>
+                <option value="pseudonymous">pseudonymous · an id only this recipient knows</option>
+                <option value="disclosure">disclosure · choose what to show</option>
+                <option value="public">public · your name and email</option>
+              </select></label>
+            </div>
+            <div class="checks" id="discloseChecks" hidden>
+              <label class="check"><input type="checkbox" name="disclose_legal_name"> legal name</label>
+              <label class="check"><input type="checkbox" name="disclose_email"> email</label>
+            </div>
+            <div class="fields"><label class="field full"><span>message to the recipient (optional; they will see it)</span><input name="message" maxlength="200" autocomplete="off"></label></div>
+            <hr class="divider">
+            <h3>just for you</h3>
+            <p class="note">stays in your ledger. the relay never sees it.</p>
+            <div class="fields">
+              <label class="field"><span>category</span><select name="category" id="payCategory"></select></label>
+              <label class="field wide"><span>private note</span><input name="note" maxlength="300" autocomplete="off" placeholder="birthday gift, client lunch…"></label>
+            </div>
+            <div class="checks">
+              <label class="check"><input type="checkbox" name="business"> business</label>
+              <label class="check"><input type="checkbox" name="tax"> tax-relevant</label>
+              <label class="check"><input type="checkbox" name="reimbursable"> reimbursable</label>
+              <label class="check"><input type="checkbox" name="commit"> let me prove this note later</label>
+            </div>
+            <button class="btn solid" type="submit">review</button>
+          </form>
+
+          <div class="panel" id="payReview" aria-live="polite">
+            <h3>review</h3>
+            <p class="note" id="payReviewNote">every fee is shown before you confirm.</p>
+            <div id="payBreakdown"></div>
+            <div class="actions" id="payConfirmRow" hidden>
+              <button class="btn go" type="button" id="payConfirm">confirm and pay</button>
+              <button class="btn quiet" type="button" id="payEdit">edit</button>
+            </div>
+            <div id="payResult"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ledger -->
+      <section class="room" data-room="ledger" id="room-ledger" hidden>
+        <header><h2 tabindex="-1">ledger</h2><p class="lede">every payment, income and expense, whether or not it went through opossum. categories are suggested; your changes teach it.</p></header>
+        <div class="stack">
+          <form id="entryForm" class="panel" novalidate>
+            <h3>add an entry</h3>
+            <div class="fields">
+              <label class="field"><span>date</span><input name="date" type="date" required></label>
+              <label class="field"><span>kind</span><select name="kind"><option value="expense">expense</option><option value="income">income</option><option value="transfer">transfer</option></select></label>
+              <label class="field wide"><span>merchant or source</span><input name="merchant" required maxlength="80" autocomplete="off"></label>
+              <label class="field"><span>amount</span><input name="amount" inputmode="decimal" required placeholder="0.00"></label>
+              <label class="field"><span>account</span><select name="account" id="entryAccount"></select></label>
+              <label class="field"><span>category (blank = suggest)</span><select name="category" id="entryCategory"></select></label>
+              <label class="field wide"><span>note</span><input name="note" maxlength="300" autocomplete="off"></label>
+            </div>
+            <div class="checks">
+              <label class="check"><input type="checkbox" name="business"> business</label>
+              <label class="check"><input type="checkbox" name="tax"> tax-relevant</label>
+              <label class="check"><input type="checkbox" name="reimbursable"> reimbursable</label>
+            </div>
+            <div class="actions"><button class="btn solid" type="submit">add</button><label class="btn quiet small" for="importFile">import csv</label><input type="file" id="importFile" accept=".csv,text/csv" hidden></div>
+          </form>
+          <div class="panel">
+            <div class="fields">
+              <label class="field wide"><span>search</span><input id="ledgerSearch" autocomplete="off" placeholder="merchant, note, category"></label>
+              <label class="field"><span>month</span><input id="ledgerMonth" type="month"></label>
+            </div>
+            <div class="scroll"><table id="ledgerTable"><thead><tr><th>date</th><th>merchant</th><th>category</th><th>flags</th><th class="num">amount</th><th>source</th><th></th></tr></thead><tbody></tbody></table></div>
+          </div>
+          <div class="panel">
+            <h3>accounts</h3>
+            <p class="note">where your money sits. balances are opening balance plus entries.</p>
+            <form id="accountForm" class="fields" novalidate>
+              <label class="field wide"><span>name</span><input name="name" required maxlength="40" autocomplete="off"></label>
+              <label class="field"><span>type</span><select name="type"><option value="checking">checking</option><option value="savings">savings</option><option value="cash">cash</option><option value="card">card</option><option value="business">business</option></select></label>
+              <label class="field"><span>opening balance</span><input name="opening" inputmode="decimal" placeholder="0.00"></label>
+              <button class="btn" type="submit">add account</button>
+            </form>
+            <div class="scroll"><table id="accountsTable"><thead><tr><th>account</th><th>type</th><th class="num">balance</th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- budgets -->
+      <section class="room" data-room="budgets" id="room-budgets" hidden>
+        <header><h2 tabindex="-1">budgets</h2><p class="lede">limits, goals and reserves, worked out from your private ledger.</p></header>
+        <div class="stack">
+          <div class="metrics" id="bgMetrics"></div>
+          <div class="split">
+            <div class="panel">
+              <h3>category budgets</h3>
+              <form id="budgetForm" class="fields" novalidate>
+                <label class="field"><span>category</span><select name="category" id="budgetCategory"></select></label>
+                <label class="field"><span>monthly limit</span><input name="limit" inputmode="decimal" required placeholder="0.00"></label>
+                <button class="btn" type="submit">set</button>
+              </form>
+              <div id="budgetList"></div>
+            </div>
+            <div class="panel">
+              <h3>savings goals</h3>
+              <form id="goalForm" class="fields" novalidate>
+                <label class="field wide"><span>goal</span><input name="name" required maxlength="40" autocomplete="off"></label>
+                <label class="field"><span>target</span><input name="target" inputmode="decimal" required></label>
+                <label class="field"><span>saved so far</span><input name="saved" inputmode="decimal" placeholder="0.00"></label>
+                <button class="btn" type="submit">add</button>
+              </form>
+              <div id="goalList"></div>
+            </div>
+          </div>
+          <div class="split">
+            <div class="panel">
+              <h3>reserves and limits</h3>
+              <form id="reserveForm" class="fields" novalidate>
+                <label class="field"><span>emergency reserve (months of spending)</span><input name="months" inputmode="decimal"></label>
+                <label class="field"><span>business expense limit / month</span><input name="business" inputmode="decimal"></label>
+                <label class="field"><span>recurring allocation to savings / month</span><input name="allocation" inputmode="decimal"></label>
+                <button class="btn" type="submit">save</button>
+              </form>
+              <div id="reserveInfo"></div>
+            </div>
+            <div class="panel">
+              <h3>recurring and subscriptions</h3>
+              <p class="note">detected from repeated payments to the same merchant.</p>
+              <div class="scroll"><table id="recurringTable"><thead><tr><th>merchant</th><th>every</th><th class="num">amount</th><th class="num">per month</th><th>next</th></tr></thead><tbody></tbody></table></div>
+            </div>
+          </div>
+          <div class="panel">
+            <h3>cash-flow projection</h3>
+            <p class="note">your balance, plus expected income, minus recurring payments and your usual spending.</p>
+            <div class="metrics" id="projection"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- reports -->
+      <section class="room" data-room="reports" id="room-reports" hidden>
+        <header><h2 tabindex="-1">reports</h2><p class="lede">built on this device. you decide when, and with whom, to share them.</p></header>
+        <div class="stack">
+          <form id="reportForm" class="panel" novalidate>
+            <h3>report</h3>
+            <div class="fields">
+              <label class="field"><span>kind</span><select name="kind">
+                <option value="statement">monthly statement</option><option value="income">income</option><option value="expense">expenses</option>
+                <option value="business">business transactions</option><option value="tax">tax report</option><option value="reimbursement">reimbursements</option>
+                <option value="custom">custom</option>
+              </select></label>
+              <label class="field"><span>from</span><input name="from" type="date" required></label>
+              <label class="field"><span>to</span><input name="to" type="date" required></label>
+              <label class="field"><span>category (custom)</span><select name="category" id="reportCategory"></select></label>
+            </div>
+            <div class="actions">
+              <button class="btn solid" type="submit">preview</button>
+              <button class="btn" type="button" data-export="csv">csv</button>
+              <button class="btn" type="button" data-export="xlsx">spreadsheet</button>
+              <button class="btn" type="button" data-export="pdf">pdf</button>
+              <button class="btn" type="button" data-export="json">json</button>
+            </div>
+          </form>
+          <div class="panel">
+            <h3 id="reportTitle">preview</h3>
+            <p class="note" id="reportSummary"></p>
+            <div class="scroll"><table id="reportTable"><thead></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- receipts and disclosure -->
+      <section class="room" data-room="receipts" id="room-receipts" hidden>
+        <header><h2 tabindex="-1">receipts</h2><p class="lede">every opossum payment has a receipt signed by the relay. share a single fact from it, without the rest of your history.</p></header>
+        <div class="stack">
+          <div class="panel">
+            <h3>signed receipts</h3>
+            <p class="note">tick the receipts to prove something about.</p>
+            <div class="scroll"><table id="receiptsTable"><thead><tr><th></th><th>date</th><th>recipient</th><th class="num">amount</th><th>mode</th><th>id</th></tr></thead><tbody></tbody></table></div>
+          </div>
+          <div class="split">
+            <form id="discloseForm" class="panel" novalidate>
+              <h3>disclosure package</h3>
+              <p class="note">the person you share this with sees only the fields you tick, and can check the relay's signature at /opossum/verify.</p>
+              <div class="fields"><label class="field"><span>for</span><select name="audience" id="discloseAudience"></select></label></div>
+              <div class="checks" id="discloseFields"></div>
+              <div class="checks">
+                <label class="check"><input type="checkbox" name="with_memo"> include proven notes</label>
+                <label class="check"><input type="checkbox" name="with_context"> add my category and note (my statement, not signed)</label>
+              </div>
+              <div class="actions"><button class="btn solid" type="submit">create package</button></div>
+            </form>
+            <div class="panel">
+              <h3>package</h3>
+              <p class="note" id="packageNote">nothing yet.</p>
+              <pre class="package" id="packageOut" hidden></pre>
+              <div class="actions" id="packageActions" hidden>
+                <button class="btn small" type="button" id="packageCopy">copy</button>
+                <button class="btn small" type="button" id="packageDownload">download</button>
+                <a class="btn quiet small" href="/opossum/verify" target="_blank" rel="noopener">open verifier</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- privacy -->
+      <section class="room" data-room="privacy" id="room-privacy" hidden>
+        <header><h2 tabindex="-1">privacy</h2><p class="lede">who can see what. you own the context around your transactions.</p></header>
+        <div class="stack">
+          <div class="panel">
+            <h3>control centre</h3>
+            <p class="note">defaults for each audience. the pay and receipts rooms start from these; you can change them each time.</p>
+            <div class="scroll"><table id="audienceTable"><thead><tr><th>audience</th><th>sees</th></tr></thead><tbody></tbody></table></div>
+            <div class="fields"><label class="field wide"><span>default payment mode</span><select id="defaultMode">
+              <option value="private">private</option><option value="pseudonymous">pseudonymous</option><option value="disclosure">disclosure</option><option value="public">public</option>
+            </select></label></div>
+          </div>
+          <div class="split">
+            <form id="identityForm" class="panel" novalidate>
+              <h3>identity vault</h3>
+              <p class="note" id="identityNote">kept encrypted on the relay. required by law for real-money payments; never shown to a recipient unless you choose.</p>
+              <div class="fields">
+                <label class="field full"><span>legal name</span><input name="legal_name" required maxlength="120" autocomplete="name"></label>
+                <label class="field full"><span>address</span><input name="address_line1" required maxlength="120" autocomplete="address-line1"></label>
+                <label class="field full"><span>address line 2</span><input name="address_line2" maxlength="120" autocomplete="address-line2"></label>
+                <label class="field"><span>city</span><input name="city" required maxlength="80" autocomplete="address-level2"></label>
+                <label class="field"><span>postal code</span><input name="postal_code" maxlength="20" autocomplete="postal-code"></label>
+                <label class="field"><span>country</span><input name="country" maxlength="2" required autocomplete="off"></label>
+                <label class="field"><span>date of birth</span><input name="date_of_birth" type="date"></label>
+                <label class="field"><span>phone</span><input name="phone" maxlength="30" autocomplete="tel"></label>
+              </div>
+              <button class="btn" type="submit">save to vault</button>
+            </form>
+            <div class="panel">
+              <h3>disclosures about you</h3>
+              <p class="note">when the law requires the relay to reveal something, it is listed here, unless a court order forbids telling you.</p>
+              <div class="scroll"><table id="myDisclosures"><thead><tr><th>date</th><th>authority</th><th>basis</th><th>fields</th></tr></thead><tbody></tbody></table></div>
+            </div>
+          </div>
+          <div class="panel">
+            <h3>data map</h3>
+            <p class="note">everything the system holds, where, and who can see it. nothing is described as "not collected" when a processor, bank or the law receives it.</p>
+            <div class="scroll"><table id="dataMap"><thead><tr><th>data</th><th>stored</th><th>visible to</th><th>kept</th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- security -->
+      <section class="room" data-room="security" id="room-security" hidden>
+        <header><h2 tabindex="-1">security</h2><p class="lede">devices, authenticator, backups and recovery.</p></header>
+        <div class="stack">
+          <div class="split">
+            <div class="panel">
+              <h3>authenticator</h3>
+              <p class="note" id="mfaNote"></p>
+              <div id="mfaSetup" hidden>
+                <p class="muted">add this key to your authenticator app (manual entry), then enter a code.</p>
+                <p class="recovery-code" id="mfaSecret"></p>
+                <p class="faint"><a id="mfaLink" href="#">open in authenticator app</a></p>
+              </div>
+              <form id="mfaForm" class="fields" novalidate>
+                <label class="field"><span>6-digit code</span><input name="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code"></label>
+                <button class="btn" type="submit" id="mfaButton">set up</button>
+              </form>
+            </div>
+            <div class="panel">
+              <h3>backup</h3>
+              <p class="note" id="backupNote"></p>
+              <div class="actions">
+                <button class="btn" type="button" id="backupNow">back up now</button>
+                <button class="btn" type="button" id="exportAll">export everything (json)</button>
+              </div>
+            </div>
+          </div>
+          <div class="panel">
+            <h3>devices</h3>
+            <p class="note">each device signs payments with its own key, created in this browser and never exported.</p>
+            <div class="scroll"><table id="devicesTable"><thead><tr><th>device</th><th>added</th><th>approved by</th><th>last payment</th><th>status</th><th></th></tr></thead><tbody></tbody></table></div>
+          </div>
+          <div class="panel">
+            <h3>close account</h3>
+            <p class="note">your backup and sessions are deleted now. payment records and your identity stay only as long as financial law requires, then are deleted. export your ledger first.</p>
+            <form id="closeForm" class="fields" novalidate>
+              <label class="field"><span>password</span><input name="password" type="password" required autocomplete="current-password"></label>
+              <button class="btn warn" type="submit">close account</button>
+            </form>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<div class="print-sheet" id="printSheet"></div>
+
+<dialog id="confirm" aria-labelledby="confirmTitle" aria-describedby="confirmText">
+  <h3 id="confirmTitle"></h3>
+  <p id="confirmText"></p>
+  <div class="actions">
+    <button type="button" class="btn quiet" id="confirmCancel">cancel</button>
+    <button type="button" class="btn warn" id="confirmGo"></button>
+  </div>
+</dialog>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<script src="/opossum/app.js"></script>
+</body>
+</html>

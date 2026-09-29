@@ -2,6 +2,7 @@
 
     python -m aiproxy init-db            create tables (safe to re-run)
     python -m aiproxy gen-admin-token    print a random ADMIN_API_TOKEN value
+    python -m aiproxy gen-opossum-key    print a random OPOSSUM_MASTER_KEY value
     python -m aiproxy reconcile          refund transactions stuck in "pending"
 """
 
@@ -58,6 +59,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init-db", help="create database tables")
     sub.add_parser("gen-admin-token", help="print a new random admin token")
+    sub.add_parser("gen-opossum-key", help="print a new random Opossum master key")
     sub.add_parser("reconcile", help="refund stale pending transactions")
     args = parser.parse_args()
 
@@ -65,5 +67,7 @@ def main() -> None:
         asyncio.run(_init_db())
     elif args.command == "gen-admin-token":
         print(secrets.token_urlsafe(48))
+    elif args.command == "gen-opossum-key":
+        print(secrets.token_urlsafe(32))
     elif args.command == "reconcile":
         asyncio.run(_reconcile())

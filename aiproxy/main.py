@@ -24,6 +24,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import admin, admin_session, gateway, payments, transactions_api
+from .opossum import admin_api as opossum_admin, api as opossum_api, maintenance as opossum_maintenance
+from .opossum import merchant as opossum_merchant, pages as opossum_pages
+from .opossum.web import OpError, op_error_handler
 from .billing import BillingEngine
 from .config import Settings, get_settings
 from .connectors import build_connectors
@@ -100,6 +103,7 @@ async def _maintenance_forever(services: Services) -> None:
             if ticks % reconcile_every == 0:
                 await services.billing.reconcile_stale(timeout)
                 await admin_session.purge_expired(services)
+                await opossum_maintenance.run(services)
         except DB_UNAVAILABLE_ERRORS:
             log.warning("maintenance skipped: database unavailable")
         except Exception:  # keep the loop alive no matter what
@@ -160,6 +164,10 @@ def create_app(
             extra={"event": "startup", "providers_configured": configured, "providers_available": len(connectors),
                    "admin_enabled": settings.admin_enabled},
         )
+        try:
+            await opossum_maintenance.seed_sandbox(services)
+        except DB_UNAVAILABLE_ERRORS:
+            log.warning("opossum sandbox seeding skipped: database unavailable")
         task = asyncio.create_task(_maintenance_forever(services)) if run_reconciler else None
         try:
             yield
@@ -186,6 +194,7 @@ def create_app(
     )
 
     app.add_middleware(HttpsOnlyMiddleware, enabled=settings.require_https)
+    app.add_exception_handler(OpError, op_error_handler)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, exc: StarletteHTTPException):
@@ -232,6 +241,10 @@ def create_app(
     app.include_router(admin_session.router)
     app.include_router(admin.api)
     app.include_router(admin.pages)
+    app.include_router(opossum_api.router)
+    app.include_router(opossum_merchant.router)
+    app.include_router(opossum_admin.router)
+    app.include_router(opossum_pages.router)
     return app
 
 

@@ -36,6 +36,11 @@ class Services:
     admin_failure_limiter: RateLimiter = field(default_factory=RateLimiter)
     # provider -> (expires_at, raw /models body, parsed model ids)
     models_cache: dict = field(default_factory=dict)
+    # Opossum: derived relay keys (None until OPOSSUM_MASTER_KEY is set) and
+    # failed sign-ins per IP.
+    opossum_keys: object | None = None
+    opossum_signin_limiter: RateLimiter = field(default_factory=RateLimiter)
+    opossum_payment_limiter: RateLimiter = field(default_factory=lambda: RateLimiter(window_seconds=3600))
 
 
 def get_services(request: Request) -> Services:

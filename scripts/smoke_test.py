@@ -105,6 +105,22 @@ def main() -> int:
         r = c.post("/admin/session", json={"token": "x"}, headers={"Origin": "https://evil.example", "X-Admin-Request": "1"})
         check("cross-site dashboard sign-in refused", r.status_code == 403, f"HTTP {r.status_code}")
 
+        # --- Opossum relay ---------------------------------------------------
+        cfg = c.get("/opossum/api/config").json()
+        if check("opossum switched on", cfg.get("enabled") is True, "set OPOSSUM_MASTER_KEY" if not cfg.get("enabled") else ""):
+            jwks = c.get("/opossum/.well-known/jwks.json")
+            check("opossum receipt key published", jwks.status_code == 200 and jwks.json()["keys"][0]["crv"] == "Ed25519")
+            recipients = c.get("/opossum/api/recipients").json()
+            check("opossum recipients listed", isinstance(recipients, list), f"{len(recipients)} recipients")
+            if recipients:
+                q = c.post("/opossum/api/quote", json={"recipient": recipients[0]["handle"], "amount": "100.00"}).json()
+                check("opossum quote shows every fee", {"amount_sent", "opossum_fee", "processor_fee", "total_cost", "recipient_receives"} <= set(q),
+                      f"fee {q.get('opossum_fee')} on 100.00 ({q.get('fee_rule')})")
+            app_page = c.get("/opossum")
+            check("opossum app locked down", "trusted-types 'none'" in app_page.headers.get("content-security-policy", ""))
+            chain = c.get("/admin/api/opossum/audit/verify", headers=admin).json()
+            check("opossum audit chain intact", chain.get("ok") is True, f"{chain.get('entries')} entries")
+
         # --- keys and rejections ---------------------------------------------
         stamp = int(time.time())
         r = c.post("/admin/api/users", json={"email": f"smoke-{stamp}@example.com", "initial_balance": "1.00"}, headers=admin)

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#070914">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23070914'/%3E%3Ccircle cx='16' cy='17' r='8' fill='none' stroke='%23ff9a5a' stroke-width='2'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/opossum/app.css">
+<title>opossum · verify</title>
+</head>
+<body>
+<div class="veil" aria-hidden="true"></div>
+<main class="layer shell" id="verifyShell">
+  <div></div>
+  <section class="room">
+    <header>
+      <h2>verify a receipt</h2>
+      <p class="lede">someone shared an opossum disclosure with you. this checks, in your browser, that the opossum relay signed it and that nothing shown was changed. it reveals only what they chose to share.</p>
+    </header>
+    <div class="stack">
+      <form class="panel" id="verifyForm" novalidate>
+        <div class="fields">
+          <label class="field full"><span>disclosure package or receipt</span><textarea name="input" spellcheck="false" placeholder='{"type": "opossum-disclosure", ...}'></textarea></label>
+        </div>
+        <div class="actions">
+          <button class="btn solid" type="submit">verify</button>
+          <label class="btn quiet small" for="verifyFile">open a file</label>
+          <input type="file" id="verifyFile" accept=".json,application/json,text/plain" hidden>
+        </div>
+        <p class="msg" id="verifyMsg" role="status" aria-live="polite"></p>
+      </form>
+      <div id="verifyOut" class="stack" aria-live="polite"></div>
+      <div class="panel">
+        <h3>how this works</h3>
+        <ul class="list">
+          <li>each receipt is a jwt signed by the relay with ed25519. its public key is at /opossum/.well-known/jwks.json.</li>
+          <li>every field inside is only a salted sha-256 digest. a shared field comes with its salt, so its digest can be recomputed and matched; unshared fields stay sealed.</li>
+          <li>a "proven note" is checked the same way: the note and its salt must hash to the commitment the relay signed at payment time.</li>
+          <li>receipts marked test money came from the sandbox. no real money moved.</li>
+          <li>anything labelled "stated by the payer" is their own description and is not signed.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+</main>
+<script src="/opossum/verify.js"></script>
+</body>
+</html>

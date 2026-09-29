@@ -50,6 +50,8 @@ Optional but recommended:
 - `ADMIN_ALLOWED_HOSTS=admin.yourdomain.com` if you add a custom domain. By default the dashboard answers only on the Railway domain in `RAILWAY_PUBLIC_DOMAIN`, and any other hostname gets 404.
 - `MAX_OUTPUT_TOKENS=8192`, or whatever suits your models. This caps what one $0.03 request can cost you.
 
+Opossum Protocol: set `OPOSSUM_MASTER_KEY` (`python -m aiproxy gen-opossum-key`). It is the root of the relay's receipt-signing and vault keys; store a copy somewhere safe outside Railway. See [opossum.md](opossum.md).
+
 ## 4. Give it a public URL
 
 App service → **Settings** → **Networking** → **Generate Domain**. You get
@@ -91,7 +93,7 @@ create your first real user and issue their key.
 - **Region:** put the app and PostgreSQL in the same region. Every request makes one database round trip.
 - **Stripe top-ups.** Users buy credit through Stripe Checkout, and the signed webhook adds it to their balance. The app needs:
   - `STRIPE_SUCCESS_URL` = `https://<name>.up.railway.app/billing/success`, and `STRIPE_CANCEL_URL` = `https://<name>.up.railway.app/billing/cancel`. The app serves both pages.
-  - A webhook endpoint in Stripe pointing to `https://<name>.up.railway.app/stripe/webhook`, for the events `checkout.session.completed` and `checkout.session.async_payment_succeeded`. Put its signing secret (`whsec_...`) in `STRIPE_WEBHOOK_SECRET`.
+  - A webhook endpoint in Stripe pointing to `https://<name>.up.railway.app/stripe/webhook`, for the events `checkout.session.completed`, `checkout.session.async_payment_succeeded` and `checkout.session.expired` (the last one lets Opossum cancel abandoned payments). Put its signing secret (`whsec_...`) in `STRIPE_WEBHOOK_SECRET`.
   - A **restricted** key (`rk_live_...`) in `STRIPE_SECRET_KEY`. In Stripe's dashboard go to **Developers → API keys → Create restricted key**, and set **Checkout Sessions** to **Write** and everything else to **None**. If a checkout then fails with a permissions error in the app's logs, also give **Products** and **Prices** Write.
 
   Sales of your other products on the same Stripe account are ignored: only sessions this app created credit anything.
