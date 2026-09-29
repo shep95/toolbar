@@ -40,7 +40,7 @@ log = logging.getLogger("aiproxy.opossum")
 
 MAX_ATTEMPTS = 8
 BACKOFF_SECONDS = (10, 60, 300, 900, 3600, 3 * 3600, 6 * 3600, 12 * 3600)
-EVENT_TYPES = ("payment.settled", "payment.refunded", "invoice.paid", "webhook.test")
+EVENT_TYPES = ("payment.settled", "payment.refunded", "payment.review", "invoice.paid", "webhook.test")
 
 
 class WebhookUrlError(ValueError):

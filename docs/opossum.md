@@ -143,6 +143,9 @@ The app's **privacy** room shows the full map (served at `/opossum/api/data-map`
 | payment amount, fees, status, time, recipient | relay record | user, recipient, relay, processor, authorities with a legal order |
 | link between payment and account | keyed tag plus encrypted envelope | relay (automated); compliance staff only through a recorded case |
 | card or bank details | Stripe, never Opossum | processor, bank |
+| stablecoin paid through Stripe Checkout | Stripe; the relay keeps the network and transaction hash on the receipt | processor, and anyone reading that blockchain |
+| on-chain payment (Bitcoin, USDC): amount, sending wallet, receiving address, transaction id | the blockchain itself (public, permanent); the relay keeps the deposit address, amount and transaction id | **everyone**: a public blockchain cannot be made private. Who the payer is stays off the chain and away from the recipient |
+| merchant's Bitcoin xpub and USDC address | encrypted on the relay | relay (to derive addresses and watch the chain); never shown to payers |
 | IP address, browser | rate limiting in memory; browser name with the session | relay, hosting providers |
 
 Nothing is described as "not collected" when a processor, bank, host or the law necessarily receives it.
@@ -276,11 +279,59 @@ The **privacy** room shows **verify with stripe identity** once a legal name and
 - **Safety on failure:** a failed or suspiciously small download never replaces the loaded list, and the error is shown in the admin.
 - **Matching:** names become sets of words, ignoring case, accents, punctuation and initials. A listed name matches when all of its words (two or more) appear in the person's name in any order. This is a filter for human review, not a verdict.
 
+### Crypto: stablecoins through Stripe, and direct on-chain payments
+
+There are two ways to take crypto, and **Opossum never holds anyone's coins or keys** in either.
+
+**1. Stablecoins through Stripe.** When "Stablecoins and crypto" is on in the Stripe dashboard (Payment methods), Stripe Checkout offers USDC (Ethereum, Solana, Polygon, Base) next to cards for USD payments. Nothing to configure in Opossum. Stripe settles it to the account in dollars, and the receipt records `payment_method: stablecoin via Stripe`, the network and the transaction hash.
+
+**2. Direct on-chain, to the merchant's own wallet.** The merchant (or the operator in the admin) gives:
+
+- a **Bitcoin extended public key** (xpub, ypub or zpub) plus the **first receiving address** their wallet shows. The relay derives address 0 and refuses the setup unless it matches, so a wrong key type can never send customers' coins somewhere the wallet does not watch. Private keys (xprv) are refused;
+- and/or a **USDC receiving address** (0x…, checksum verified), used on Ethereum, Base, Polygon, Arbitrum and Optimism.
+
+`PUT /opossum/merchant/api/chain {"btc_xpub": "zpub…", "btc_first_address": "bc1q…", "usdc_address": "0x…"}` (admin: `PUT /admin/api/opossum/recipients/{id}/chain`).
+
+How a payment works:
+
+- **Bitcoin.** Each payment gets a fresh address (m/0/1, m/0/2, … of the merchant's key), so payments are not linked by address reuse. The price comes from a BTC-USD spot quote and is held for `OPOSSUM_CHAIN_QUOTE_MINUTES` (30). Settles after `OPOSSUM_BTC_CONFIRMATIONS` (2).
+- **USDC.** Sent to the merchant's address. 1 USDC = 1 USD, and each payment's amount carries a unique tail of up to 0.009999 USDC so the relay can match it; one on-chain transfer can never settle two payments. Settles after 12 (Ethereum), 20 (Base, Arbitrum, Optimism) or 64 (Polygon) blocks.
+- The payer's app shows the address, the exact amount, a QR code and a wallet link (BIP21 / EIP-681), then follows the payment until it settles and the receipt is signed. The receipt adds the chain, asset, crypto amount, transaction id, deposit address and price used.
+- **Fees.** The payer sends the price; the network fee is set by their wallet. Opossum's fee is not taken from the coins (it cannot be: they go straight to the merchant). It accrues to the merchant's `fees_due` (`GET /opossum/merchant/api/fees`) and the operator records payments with `POST /admin/api/opossum/recipients/{id}/fees-paid`.
+- **When it goes wrong.**
+  - *expired:* the quote ran out with nothing received.
+  - *underpaid:* less than quoted arrived before the quote ran out.
+  - *received_late:* Bitcoin arrived after the price lock; the merchant decides.
+  - *review:* see screening below.
+
+  These never settle automatically.
+- **Refunds.** The relay cannot move coins. The merchant sends the refund from their wallet, then records its transaction id: `POST /opossum/merchant/api/payments/{id}/refund {"txid": "…"}`. Opossum's fee on that payment is cancelled.
+- **Screening.** The OFAC refresh also loads the crypto addresses the SDN list publishes ("Digital Currency Address - …"). A payment sent from a listed address goes to **review** and is never settled automatically, and the merchant gets a `payment.review` webhook.
+
+What this does **not** do, on purpose:
+
+- No mixing, tumbling, coinjoin or anything else that obscures where funds came from or went.
+- No custody: Opossum never holds balances, so it is not a wallet or an exchange.
+
+A public blockchain shows the amount, the sending wallet and the receiving address to anyone, forever. Opossum's privacy on-chain is limited to keeping *who you are* away from the merchant and out of the chain, and keeping your ledger on your device.
+
+**Infrastructure.**
+
+- **Chain data:**
+  - Bitcoin is watched through an Esplora API (`OPOSSUM_BTC_API`, default mempool.space).
+  - USDC is watched through JSON-RPC nodes (`OPOSSUM_EVM_RPC`, a JSON map; defaults are public rate-limited endpoints).
+  - In production, use your own node or a paid provider.
+- **Price:** comes from `OPOSSUM_PRICE_API` (Coinbase spot).
+- **Watch cadence:** payments are checked on the maintenance cycle, every 30 s.
+- **Turning it off:** set `OPOSSUM_CHAIN_ENABLED=false`.
+
+Whether accepting crypto needs a licence or registration depends on your country and business; that is a question for your lawyer.
+
 ### Merchants' systems: signed webhooks
 
 A merchant sets an endpoint with `PUT /opossum/merchant/api/webhook {"url": "https://…"}`; the signing secret is returned once.
 
-- **Events:** `payment.settled`, `payment.refunded`, `invoice.paid`, `webhook.test`.
+- **Events:** `payment.settled`, `payment.refunded`, `payment.review` (on-chain payment held for compliance), `invoice.paid`, `webhook.test`.
 - **Delivery:** events are written to an outbox in the same transaction as the payment, then delivered with backoff (10 s up to 12 h, 8 attempts).
 - **What they carry:** only the recipient's view of the payment.
 - **Address guard:** endpoints must be public https; private, loopback, link-local and reserved addresses are refused, and redirects are not followed.
@@ -312,12 +363,12 @@ User API (`/opossum/api`, session cookie plus `X-Opossum-Request: 1` on writes):
 | POST | `/payments` | a signed payment (`X-Opossum-Device`, `X-Opossum-Signature`) |
 | POST | `/identity/verify` | start a Stripe Identity check; returns the hosted verification URL |
 
-Merchant API (`/opossum/merchant/api`, `Authorization: Bearer opm_…`): `GET /me`, `GET /payments`, `POST /payments/{id}/refund`, `GET/POST /invoices`, `GET/PUT /webhook`.
+Merchant API (`/opossum/merchant/api`, `Authorization: Bearer opm_…`): `GET /me`, `GET /payments`, `POST /payments/{id}/refund` (on-chain: `{"txid"}`), `GET/POST /invoices`, `GET/PUT /webhook`, `PUT /chain`, `GET /fees`.
 
 Compliance API (`/admin/api/opossum`, admin sign-in):
 
 - `overview`, `transactions`
-- `recipients` (plus `merchant-key`, `stripe-onboarding` and `check-onboarding`)
+- `recipients` (plus `merchant-key`, `stripe-onboarding`, `check-onboarding`, `chain` and `fees-paid`)
 - `transactions/{id}/refund`, `sanctions`, `sanctions/refresh`
 - `fee-rules`, `jurisdictions`, `screening`
 - `kyc`, `cases` (plus `disclose` and `close`)
@@ -326,7 +377,8 @@ Compliance API (`/admin/api/opossum`, admin sign-in):
 ## 11. Honest limits of this MVP
 
 - **Audit.** The cryptography uses established primitives through `pyca/cryptography` and WebCrypto, but it has not been independently audited. That must happen before real funds flow.
-- **Processor.** Stripe Connect is the only real-money processor. There is no bank-transfer rail and no crypto, by design for the MVP.
+- **Processor.** Stripe (cards and, where enabled, stablecoins) is the card processor. Direct on-chain payments cover Bitcoin and USDC on five EVM networks; there is no bank-transfer rail. On-chain there is no chargeback and the relay cannot refund, and a chain reorganisation deeper than the confirmation count could undo a settled payment.
+- **Crypto privacy.** Public blockchains are public. Anyone can follow an on-chain payment between wallets. Opossum does not and will not mix or obscure funds.
 - **FX.** No currency conversion: totals and limits are per currency.
 - **Payees.** Payments go to onboarded recipients (merchants and payees). Person-to-person transfers between users and receiving money into Opossum are not in the MVP.
 - **Refunds and disputes.** Refunds are full refunds only. Disputes (chargebacks) are handled in the Stripe dashboard.

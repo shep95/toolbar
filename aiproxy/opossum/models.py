@@ -117,6 +117,13 @@ class OpRecipient(Base):
     # The merchant's endpoint for signed payment events, and its signing secret (encrypted).
     webhook_url: Mapped[str | None] = mapped_column(String(300))
     webhook_secret_enc: Mapped[str | None] = mapped_column(Text)
+    # On-chain receiving setup (xpub for Bitcoin, address for USDC), encrypted:
+    # an xpub reveals every address of the merchant's wallet.
+    chain_config_enc: Mapped[str | None] = mapped_column(Text)
+    # The on-chain payment methods that setup enables, e.g. "btc,usdc-base" (not secret).
+    chain_rails: Mapped[str | None] = mapped_column(String(200))
+    # Opossum fees on direct on-chain payments, billed to the recipient.
+    fees_due: Mapped[Decimal | None] = mapped_column(MONEY)
 
 
 class OpInvoice(Base):
@@ -172,6 +179,17 @@ class OpTransaction(Base):
     processor_payment: Mapped[str | None] = mapped_column(String(80))
     refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     refund_ref: Mapped[str | None] = mapped_column(String(80))
+    # Direct on-chain payments.
+    rail: Mapped[str | None] = mapped_column(String(24))
+    asset: Mapped[str | None] = mapped_column(String(10))
+    crypto_amount: Mapped[str | None] = mapped_column(String(40))
+    crypto_received: Mapped[str | None] = mapped_column(String(40))
+    deposit_address: Mapped[str | None] = mapped_column(String(100))
+    rate_usd: Mapped[str | None] = mapped_column(String(40))
+    quote_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    chain_from_block: Mapped[int | None] = mapped_column(BigInteger)
+    chain_txid: Mapped[str | None] = mapped_column(String(100))
+    confirmations: Mapped[int | None] = mapped_column(Integer)
 
 
 class OpFeeRule(Base):
@@ -333,4 +351,16 @@ class OpWebhookDelivery(Base):
     next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class OpChainAddress(Base):
+    """Per-payment Bitcoin addresses handed out from a merchant's xpub."""
+
+    __tablename__ = "op_chain_addresses"
+
+    address: Mapped[str] = mapped_column(String(100), primary_key=True)
+    recipient_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("op_recipients.id", ondelete="CASCADE"), nullable=False, index=True)
+    derivation_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    tx_id: Mapped[str | None] = mapped_column(String(40))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

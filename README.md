@@ -7,7 +7,7 @@ gateway.
 - **AI requests.** Users call 40 built-in AI providers across 11 countries through one key, and each completed request is a transaction too.
 - **Fair worldwide.** The base fee is $0.03 in high-income economies and scales down with each country's World Bank income group, to as little as $0.006.
 - **Prepaid balances.** Users top up by card through Stripe Checkout, which can show the price in their own currency.
-- **Opossum Protocol.** A privacy-preserving payment relay with a personal ledger at `/opossum`. Recipients see a pseudonym, not the payer. The ledger, budgets and reports stay encrypted on the user's device. Signed receipts let users prove one fact without exposing the rest. The fee is 3%, disclosed in full before every payment. See [docs/opossum.md](docs/opossum.md).
+- **Opossum Protocol.** A privacy-preserving payment relay with a personal ledger at `/opossum`. Recipients see a pseudonym, not the payer. The ledger, budgets and reports stay encrypted on the user's device. Signed receipts let users prove one fact without exposing the rest. The fee is 3%, disclosed in full before every payment. Payers can use a card or stablecoin through Stripe, or pay Bitcoin or USDC straight to a merchant's own wallet; Opossum only watches the chain and never holds coins. See [docs/opossum.md](docs/opossum.md).
 
 Built with Python (FastAPI) and PostgreSQL. It runs live on Railway: see
 [docs/railway.md](docs/railway.md).

@@ -162,6 +162,19 @@ class Settings(BaseSettings):
     # the Stripe dashboard). A matching selfie costs more but is stronger.
     opossum_stripe_identity: bool = True
     opossum_identity_selfie: bool = False
+    # Direct on-chain payments to merchants' own wallets (non-custodial:
+    # Opossum only watches the chain). Use your own node/provider URLs in
+    # production; the defaults are public endpoints with rate limits.
+    opossum_chain_enabled: bool = True
+    opossum_btc_api: str = "https://mempool.space/api"
+    opossum_evm_rpc: str = (
+        '{"ethereum": "https://ethereum-rpc.publicnode.com", "base": "https://base-rpc.publicnode.com", '
+        '"polygon": "https://polygon-bor-rpc.publicnode.com", "arbitrum": "https://arbitrum-one-rpc.publicnode.com", '
+        '"optimism": "https://optimism-rpc.publicnode.com"}'
+    )
+    opossum_price_api: str = "https://api.coinbase.com/v2/prices/{pair}/spot"
+    opossum_btc_confirmations: int = 2
+    opossum_chain_quote_minutes: int = 30
 
     log_level: str = "INFO"
 

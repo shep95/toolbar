@@ -82,6 +82,22 @@ DATA_MAP = {
             "required": "yes, for real-money payments",
         },
         {
+            "data": "stablecoin paid through Stripe: network and transaction hash",
+            "stored": "at Stripe; the network and transaction hash are also written on your signed receipt",
+            "visible_to": ["you", "payment_processor", "anyone reading that blockchain", "authorities_with_legal_order"],
+            "retention": "the blockchain keeps it forever; the relay copy with the payment record",
+            "required": "yes, if you choose to pay with a stablecoin",
+        },
+        {
+            "data": "on-chain payment (Bitcoin, USDC): amount, your sending wallet, the receiving address, transaction id",
+            "stored": "on the public blockchain; the relay keeps the deposit address, amount and transaction id with the payment record",
+            "visible_to": ["everyone: public blockchains are public and cannot be made private", "you", "recipient", "opossum_relay",
+                           "authorities_with_legal_order"],
+            "retention": "the blockchain keeps it forever; the relay copy with the payment record",
+            "required": "yes, if you choose to pay from your own wallet. Who you are is never put on the chain or shown to the recipient. "
+                        "Opossum does not mix or obscure funds; sending wallets are screened against the OFAC list",
+        },
+        {
             "data": "private note you chose to commit to a receipt",
             "stored": "only a SHA-256 hash of it (with a secret salt) is sent and signed into the receipt",
             "visible_to": ["you", "anyone you later show the note and salt to"],

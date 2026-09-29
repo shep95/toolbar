@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 import itertools
 import logging
 from datetime import timedelta
@@ -36,6 +37,12 @@ from .models import OpAccount, OpIdentity, OpListMeta, OpRecipient, OpScreeningE
 log = logging.getLogger("aiproxy.opossum")
 
 LIST_NAME = "ofac-sdn"
+ADDRESS_LIST = "ofac-sdn-crypto-addresses"
+COMMENTS_URLS = (
+    "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN_COMMENTS.CSV",
+    "https://www.treasury.gov/ofac/downloads/sdn_comments.csv",
+)
+DIGITAL_ADDRESS = re.compile(r"Digital Currency Address - ([A-Z0-9]{2,8})\s+([A-Za-z0-9]{20,110})")
 SDN_URLS = (
     "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.CSV",
     "https://www.treasury.gov/ofac/downloads/sdn.csv",
@@ -93,6 +100,45 @@ def parse_alt(text: str) -> list[str]:
     return names
 
 
+def address_key(address: str) -> str:
+    """0x and bech32 addresses are case-insensitive; base58 ones are not."""
+    a = address.strip()
+    if a.lower().startswith(("0x", "bc1")):
+        a = a.lower()
+    return "addr:" + a
+
+
+def parse_addresses(*texts: str) -> list[str]:
+    """Crypto addresses OFAC lists in the SDN remarks ("Digital Currency Address - XBT bc1...")."""
+    out = set()
+    for text in texts:
+        for _, address in DIGITAL_ADDRESS.findall(text or ""):
+            out.add(address)
+    return sorted(out)
+
+
+async def screen_addresses(session, addresses: list[str]) -> str | None:
+    keys = [address_key(a) for a in addresses if a]
+    if not keys:
+        return None
+    return await session.scalar(select(OpScreeningEntry.list_name).where(OpScreeningEntry.normalized_name.in_(keys)).limit(1))
+
+
+async def load_addresses(services: Services, addresses: list[str], source: str) -> int:
+    keys = sorted({address_key(a)[:200] for a in addresses})
+    async with services.db.session() as session, session.begin():
+        await session.execute(delete(OpScreeningEntry).where(OpScreeningEntry.list_name == ADDRESS_LIST))
+        if keys:
+            await session.execute(insert(OpScreeningEntry), [{"normalized_name": k, "list_name": ADDRESS_LIST} for k in keys])
+        meta = await session.get(OpListMeta, ADDRESS_LIST)
+        if meta is None:
+            meta = OpListMeta(list_name=ADDRESS_LIST, source=source)
+            session.add(meta)
+        meta.source, meta.entries, meta.loaded_at, meta.checked_at, meta.last_error = source[:300], len(keys), utcnow(), utcnow(), None
+        await audit.append(session, "system", "screening_list_loaded", ADDRESS_LIST, entries=len(keys))
+    return len(keys)
+
+
 async def _download(services: Services, urls: tuple[str, ...]) -> tuple[str, str]:
     last = "no source"
     for url in urls:
@@ -139,9 +185,14 @@ async def refresh_ofac(services: Services) -> dict:
         log.error("OFAC list refresh failed: %s", exc)
         return {"ok": False, "error": str(exc)}
     count = await load_names(services, LIST_NAME, names, sdn_url)
+    try:
+        comments, _ = await _download(services, COMMENTS_URLS)
+    except RuntimeError:
+        comments = ""  # the remarks overflow file is optional
+    address_count = await load_addresses(services, parse_addresses(sdn_text, comments), sdn_url)
     hits = await rescreen(services)
-    log.info("OFAC list loaded", extra={"event": "ofac_loaded", "entries": count, "matches": hits})
-    return {"ok": True, "entries": count, "new_matches": hits}
+    log.info("OFAC list loaded", extra={"event": "ofac_loaded", "entries": count, "crypto_addresses": address_count, "matches": hits})
+    return {"ok": True, "entries": count, "crypto_addresses": address_count, "new_matches": hits}
 
 
 async def rescreen(services: Services) -> int:

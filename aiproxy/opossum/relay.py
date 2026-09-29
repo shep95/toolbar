@@ -71,7 +71,20 @@ def parse_amount(value) -> Decimal:
     return amount
 
 
-async def compute_quote(services: Services, session, recipient: OpRecipient, amount, currency: str, tx_type: str, fee_bearer: str) -> Quote:
+def recipient_rails(r: OpRecipient) -> list[str]:
+    rails = ["card"] if r.processor in ("stripe", "sandbox") else []
+    return rails + [x for x in (r.chain_rails or "").split(",") if x]
+
+
+async def compute_quote(services: Services, session, recipient: OpRecipient, amount, currency: str, tx_type: str, fee_bearer: str,
+                        rail: str = "card") -> Quote:
+    on_chain = rail != "card"
+    if on_chain:
+        if not services.settings.opossum_chain_enabled or rail not in recipient_rails(recipient):
+            raise OpError(400, "rail_unavailable", "this recipient does not accept that payment method")
+        if currency != "USD":
+            raise OpError(400, "unsupported_currency", "crypto payments are priced in USD")
+        fee_bearer = "recipient"  # on-chain the recipient gets the full amount and is billed Opossum's fee
     if currency not in currencies(services):
         raise OpError(400, "unsupported_currency", f"currency must be one of {', '.join(currencies(services))}")
     if tx_type not in TX_TYPES:
@@ -81,8 +94,8 @@ async def compute_quote(services: Services, session, recipient: OpRecipient, amo
     try:
         return quote(
             parse_amount(amount), currency, rule,
-            processor_percent=services.settings.opossum_processor_fee_percent,
-            processor_flat=services.settings.opossum_processor_fee_flat,
+            processor_percent=Decimal("0") if on_chain else services.settings.opossum_processor_fee_percent,
+            processor_flat=Decimal("0") if on_chain else services.settings.opossum_processor_fee_flat,
             fee_bearer=fee_bearer,
         )
     except FeeError as exc:
@@ -102,8 +115,20 @@ async def find_recipient(session, handle: str) -> OpRecipient:
 
 
 def recipient_public(r: OpRecipient) -> dict:
+    from .chains import rail_label
+
+    rails = recipient_rails(r)
     return {"handle": r.handle, "name": r.display_name, "category": r.category, "country": r.country,
-            "test_money": r.processor == "sandbox"}
+            "test_money": r.processor == "sandbox",
+            "rails": [{"id": x, "label": ("card or stablecoin (Stripe)" if r.processor == "stripe" else "card (test money)") if x == "card"
+                       else rail_label(x)} for x in rails]}
+
+
+def chain_fields(tx: OpTransaction) -> dict:
+    if not tx.rail or tx.rail == "card":
+        return {}
+    return {"rail": tx.rail, "crypto_asset": tx.asset, "crypto_amount": tx.crypto_amount, "crypto_received": tx.crypto_received,
+            "chain_txid": tx.chain_txid, "confirmations": tx.confirmations or 0}
 
 
 def money(value) -> str:
@@ -119,7 +144,7 @@ def money_fields(tx: OpTransaction) -> dict:
     }
 
 
-def owner_view(keys: RelayKeys, tx: OpTransaction, recipient: OpRecipient) -> dict:
+def owner_view(keys: RelayKeys, tx: OpTransaction, recipient: OpRecipient, settings=None) -> dict:
     view = {
         "id": tx.id, "status": tx.status, "type": tx.tx_type, "mode": tx.mode, "payer_pseudonym": tx.payer_pseudonym,
         "recipient": recipient_public(recipient), "invoice_id": tx.invoice_id, **money_fields(tx),
@@ -133,6 +158,11 @@ def owner_view(keys: RelayKeys, tx: OpTransaction, recipient: OpRecipient) -> di
     if tx.status == "settled" and tx.receipt_enc:
         stored = keys.open(tx.receipt_enc, f"op_transactions:{tx.id}:receipt")
         view["receipt"] = {"sd_jwt": stored["sd_jwt"], "disclosures": stored["disclosures"]}
+    view.update(chain_fields(tx))
+    if settings is not None and tx.rail and tx.rail != "card" and tx.status in ("awaiting_chain", "confirming", "expired", "underpaid"):
+        from .chains import instructions
+
+        view["pay_on_chain"] = instructions(tx, settings)
     return view
 
 
@@ -147,7 +177,7 @@ def recipient_view(keys: RelayKeys, tx: OpTransaction) -> dict:
         "opossum_fee": money(tx.opossum_fee), "processor_fee": money(tx.processor_fee), "fee_bearer": tx.fee_bearer,
         "created_at": aware(tx.created_at).isoformat(), "settled_at": aware(tx.settled_at).isoformat() if tx.settled_at else None,
         "refunded_at": aware(tx.refunded_at).isoformat() if tx.refunded_at else None,
-        "test_money": tx.processor == "sandbox",
+        "test_money": tx.processor == "sandbox", **chain_fields(tx),
     }
 
 
@@ -203,6 +233,9 @@ async def create_payment(services: Services, keys: RelayKeys, account: OpAccount
     if mode not in MODES:
         raise OpError(400, "invalid_mode", f"mode must be one of {', '.join(MODES)}")
     fee_bearer = req.get("fee_bearer", "recipient")
+    rail = req.get("rail") or "card"
+    if not isinstance(rail, str) or len(rail) > 24:
+        raise OpError(400, "invalid_request", "rail must be a payment method id")
     currency = str(req.get("currency", "USD")).upper()
     tx_type = req.get("type", "purchase")
     memo_commitment = req.get("memo_commitment")
@@ -227,13 +260,13 @@ async def create_payment(services: Services, keys: RelayKeys, account: OpAccount
             if parse_amount(req.get("amount")) != invoice.amount or currency != invoice.currency:
                 raise OpError(400, "invoice_mismatch", f"this invoice is for {invoice.amount} {invoice.currency}")
             tx_type = "invoice"
-        q = await compute_quote(services, session, recipient, req.get("amount"), currency, tx_type, fee_bearer)
+        q = await compute_quote(services, session, recipient, req.get("amount"), currency, tx_type, fee_bearer, rail)
         if str(req.get("expected_total")) != str(q.total_cost):
             raise OpError(409, "quote_changed", "the total changed since you reviewed it; please review again", quote=q.as_dict())
 
         if services.settings.opossum_require_mfa and not account.mfa_enabled:
             raise OpError(403, "mfa_required", "turn on an authenticator app in security before making payments")
-        real_money = recipient.processor != "sandbox"
+        real_money = recipient.processor != "sandbox" or rail != "card"
         try:
             limits = await check_payment(
                 session, services.settings, account_country=account.jurisdiction, kyc_status=account.kyc_status,
@@ -248,7 +281,7 @@ async def create_payment(services: Services, keys: RelayKeys, account: OpAccount
             recent = await session.scalar(select(OpTransaction.id).where(
                 OpTransaction.owner_tag == owner_tag, OpTransaction.recipient_id == recipient.id,
                 OpTransaction.amount == q.amount, OpTransaction.created_at >= now - timedelta(seconds=DUPLICATE_WINDOW_SECONDS),
-                OpTransaction.status.in_(("pending_payment", "settled")),
+                OpTransaction.status.in_(("pending_payment", "settled", "awaiting_chain", "confirming")),
             ).limit(1))
             if recent:
                 raise OpError(409, "possible_duplicate", "you just paid this recipient the same amount; confirm to pay again")
@@ -272,7 +305,7 @@ async def create_payment(services: Services, keys: RelayKeys, account: OpAccount
             tx_type=tx_type, mode=mode, payer_pseudonym=pseudonym, memo_commitment=memo_commitment,
             amount=q.amount, currency=currency, fee_bearer=q.fee_bearer, opossum_fee=q.opossum_fee, processor_fee=q.processor_fee,
             total_cost=q.total_cost, recipient_receives=q.recipient_receives, fee_rule=q.rule.describe()[:80],
-            status="creating", processor=recipient.processor, created_at=now,
+            status="creating", processor="chain" if rail != "card" else recipient.processor, created_at=now, rail=rail,
             retain_until=now + timedelta(days=limits.retention_days), compliance_envelope="",
         )
         tx.compliance_envelope = keys.seal({"account_id": str(account.id), "device_id": device_id}, f"op_transactions:{tx.id}:envelope")
@@ -284,10 +317,20 @@ async def create_payment(services: Services, keys: RelayKeys, account: OpAccount
         session.add(tx)
         session.add(OpIdempotency(key=idem_key, tx_id=tx.id, request_hash=_request_hash_without_replay_fields(req),
                                   expires_at=now + timedelta(hours=IDEMPOTENCY_HOURS)))
+        if rail != "card":
+            from .chains import prepare
+
+            config = keys.open(recipient.chain_config_enc, f"op_recipients:{recipient.id}:chain") if recipient.chain_config_enc else {}
+            plan = await prepare(services, session, recipient, config, rail, q.total_cost, tx.id)
+            for key in ("asset", "crypto_amount", "deposit_address", "rate_usd", "quote_expires_at", "chain_from_block"):
+                setattr(tx, key, plan[key])
+            tx.status = "awaiting_chain"
         await session.flush()
         await audit.append(session, "relay", "payment_created", tx.id, amount=str(tx.amount), currency=currency, mode=mode,
-                           recipient=recipient.handle, processor=recipient.processor, fee_rule=tx.fee_rule)
+                           recipient=recipient.handle, processor=tx.processor, rail=rail, fee_rule=tx.fee_rule)
         recipient_id = recipient.id
+        if rail != "card":
+            return owner_view(keys, tx, recipient, services.settings)
 
     # The processor call happens outside the database transaction.
     async with services.db.session() as session:
@@ -342,11 +385,12 @@ def receipt_claims(tx: OpTransaction, recipient: OpRecipient, invoice: OpInvoice
     return claims
 
 
-async def settle(session, keys: RelayKeys, tx: OpTransaction) -> None:
+async def settle(session, keys: RelayKeys, tx: OpTransaction, extra: dict | None = None) -> None:
     if tx.status == "settled":
         return
     stored = keys.open(tx.receipt_enc, f"op_transactions:{tx.id}:receipt")
     claims = stored.get("pending") or {}
+    claims.update({k: v for k, v in (extra or {}).items() if v is not None})
     now = utcnow()
     claims.update({
         "status": "settled",
@@ -380,6 +424,11 @@ async def settle_from_stripe(services: Services, event_type: str, obj: dict) -> 
 
     keys = get_keys(services)
     tx_id = str((obj.get("metadata") or {}).get("opossum_tx") or "")[:40]
+    extra = {}
+    if event_type != "checkout.session.expired" and obj.get("payment_status") == "paid" and obj.get("payment_intent"):
+        from .stripe_ops import payment_details
+
+        extra = await payment_details(services, str(obj["payment_intent"]))
     async with services.db.session() as session, session.begin():
         tx = await session.get(OpTransaction, tx_id)
         if tx is None or tx.processor != "stripe" or tx.processor_ref != obj.get("id"):
@@ -397,7 +446,7 @@ async def settle_from_stripe(services: Services, event_type: str, obj: dict) -> 
             return {"received": True, "ignored": "amount mismatch"}
         if obj.get("payment_intent"):
             tx.processor_payment = str(obj["payment_intent"])[:80]
-        await settle(session, keys, tx)
+        await settle(session, keys, tx, extra=extra)
     return {"received": True, "settled": tx_id}
 
 
@@ -405,7 +454,7 @@ async def settle_from_stripe(services: Services, event_type: str, obj: dict) -> 
 
 
 async def refund_payment(services: Services, keys: RelayKeys, tx_id: str, *, actor: str, reason: str,
-                         recipient_id=None) -> OpTransaction:
+                         recipient_id=None, chain_refund_txid: str | None = None) -> OpTransaction:
     """Refund a settled payment in full, through the processor that took it.
 
     ``recipient_id`` limits a merchant to refunding its own payments.
@@ -423,7 +472,12 @@ async def refund_payment(services: Services, keys: RelayKeys, tx_id: str, *, act
             raise OpError(409, "not_refundable", f"only settled payments can be refunded; this one is {tx.status}")
         recipient = await session.get(OpRecipient, tx.recipient_id)
     reference = "sbx_refund_" + tx.id.split("_", 1)[1]
-    if tx.processor == "stripe":
+    if tx.processor == "chain":
+        # Non-custodial: the merchant sends the refund from its own wallet and records it here.
+        if not chain_refund_txid or not re.fullmatch(r"(0x)?[0-9a-fA-F]{64}", chain_refund_txid):
+            raise OpError(409, "refund_on_chain", "send the refund from your wallet to the payer, then record its transaction id")
+        reference = chain_refund_txid
+    elif tx.processor == "stripe":
         try:
             intent = tx.processor_payment or await payment_intent_for(services, tx.processor_ref)
             if not intent:
@@ -441,6 +495,8 @@ async def mark_refunded(services: Services, keys: RelayKeys, tx_id: str, *, refe
             return tx
         tx.status, tx.refunded_at, tx.refund_ref = "refunded", utcnow(), reference[:80]
         recipient = await session.get(OpRecipient, tx.recipient_id)
+        if tx.processor == "chain" and recipient is not None and recipient.fees_due:
+            recipient.fees_due = max(Decimal("0"), recipient.fees_due - tx.opossum_fee)
         if tx.invoice_id:
             invoice = await session.get(OpInvoice, tx.invoice_id)
             if invoice is not None and invoice.paid_tx_id == tx.id:

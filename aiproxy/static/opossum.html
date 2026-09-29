@@ -138,11 +138,15 @@
               <label class="field wide"><span>recipient</span><select name="recipient" id="payRecipient" required></select></label>
               <label class="field"><span>invoice (optional)</span><input name="invoice" id="payInvoice" autocomplete="off" placeholder="inv_…"></label>
             </div>
+            <div class="fields" id="payRailRow" hidden>
+              <label class="field wide"><span>pay with</span><select name="rail" id="payRail"></select></label>
+            </div>
+            <p class="note" id="payRailNote" hidden></p>
             <div class="fields">
               <label class="field"><span>amount</span><input name="amount" id="payAmount" inputmode="decimal" required placeholder="0.00"></label>
               <label class="field"><span>currency</span><select name="currency" id="payCurrency"></select></label>
               <label class="field"><span>type</span><select name="type" id="payType"></select></label>
-              <label class="field"><span>fees paid by</span><select name="fee_bearer"><option value="recipient">recipient</option><option value="payer">me, on top</option></select></label>
+              <label class="field"><span>fees paid by</span><select name="fee_bearer" id="payFeeBearer"><option value="recipient">recipient</option><option value="payer">me, on top</option></select></label>
             </div>
             <hr class="divider">
             <h3>what the recipient sees</h3>
@@ -186,6 +190,11 @@
             </div>
             <div id="payResult"></div>
           </div>
+        </div>
+        <div class="panel" id="payOpenChain" hidden>
+          <h3>waiting on the blockchain</h3>
+          <p class="note">payments you started from your own wallet. they settle by themselves once the network confirms them.</p>
+          <div class="scroll"><table id="payOpenTable"><thead><tr><th>date</th><th>to</th><th>method</th><th class="num">amount</th><th>status</th><th></th></tr></thead><tbody></tbody></table></div>
         </div>
       </section>
 

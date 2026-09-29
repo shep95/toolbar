@@ -155,7 +155,8 @@ class RecipientPatch(BaseModel):
 def _recipient_json(r: OpRecipient) -> dict:
     return {"id": str(r.id), "handle": r.handle, "display_name": r.display_name, "category": r.category, "country": r.country,
             "processor": r.processor, "processor_account": r.processor_account, "status": r.status,
-            "merchant_key_prefix": r.api_key_prefix, "created_at": aware(r.created_at).isoformat()}
+            "merchant_key_prefix": r.api_key_prefix, "created_at": aware(r.created_at).isoformat(),
+            "rails": [x for x in (r.chain_rails or "").split(",") if x], "fees_due": money(r.fees_due or 0)}
 
 
 @router.get("/recipients")
@@ -246,6 +247,36 @@ async def stripe_onboarding(recipient_id: uuid.UUID, request: Request, services:
             row.status = "onboarding"  # takes payments once Stripe says charges and payouts are enabled
         await audit.append(session, _actor(request), "recipient_stripe_onboarding", row.handle)
     return {"account": account, "onboarding_url": link.json().get("url")}
+
+
+@router.put("/recipients/{recipient_id}/chain")
+async def recipient_chain(recipient_id: uuid.UUID, request: Request, services: Services = Depends(require_admin)):
+    """Set up direct crypto payments to the recipient's own wallet (same rules as the merchant API)."""
+    from .merchant import ChainSetup, apply_chain_setup
+
+    body = ChainSetup(**(await request.json()))
+    async with services.db.session() as session:
+        if await session.get(OpRecipient, recipient_id) is None:
+            raise OpError(404, "unknown_recipient", "no such recipient")
+    return await apply_chain_setup(services, keys(services), recipient_id, body)
+
+
+@router.post("/recipients/{recipient_id}/fees-paid")
+async def fees_paid(recipient_id: uuid.UUID, body: dict, request: Request, services: Services = Depends(require_admin)):
+    """Record that a recipient paid its billed on-chain fees."""
+    try:
+        amount = Decimal(str(body.get("amount")))
+    except Exception:  # noqa: BLE001
+        raise OpError(400, "invalid_amount", "amount must be a number") from None
+    async with services.db.session() as session, session.begin():
+        r = await session.get(OpRecipient, recipient_id)
+        if r is None:
+            raise OpError(404, "unknown_recipient", "no such recipient")
+        if not amount.is_finite() or amount <= 0 or amount > (r.fees_due or 0):
+            raise OpError(400, "invalid_amount", f"amount must be between 0 and {money(r.fees_due or 0)}")
+        r.fees_due = (r.fees_due or Decimal("0")) - amount
+        await audit.append(session, _actor(request), "fees_paid", r.handle, amount=str(amount))
+    return {"fees_due": money(r.fees_due)}
 
 
 @router.post("/recipients/{recipient_id}/check-onboarding")

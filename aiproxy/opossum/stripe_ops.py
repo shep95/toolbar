@@ -33,7 +33,8 @@ async def _stripe(services: Services, method: str, path: str, data: dict | None 
     except ValueError:
         body = {}
     if resp.status_code >= 400:
-        message = (body.get("error") or {}).get("message") or f"HTTP {resp.status_code}"
+        error = body.get("error") if isinstance(body, dict) else None
+        message = (error.get("message") if isinstance(error, dict) else None) or f"HTTP {resp.status_code}"
         log.error("stripe %s %s refused: %s", method, path, message)
         raise ProcessorError(f"Stripe: {message}")
     return body
@@ -81,3 +82,21 @@ async def identity_session(services: Services, *, reference: str, return_url: st
     if not url.startswith("https://verify.stripe.com/"):
         raise ProcessorError("Stripe Identity returned an unexpected address")
     return {"id": session.get("id"), "url": url}
+
+
+async def payment_details(services: Services, payment_intent: str) -> dict:
+    """How a Stripe payment was made: card, or a stablecoin on which network.
+
+    Best effort: a missing detail never blocks settlement.
+    """
+    try:
+        intent = await _stripe(services, "GET", f"/payment_intents/{payment_intent}?expand[]=latest_charge")
+    except ProcessorError:
+        return {}
+    details = ((intent.get("latest_charge") or {}).get("payment_method_details") or {})
+    kind = details.get("type")
+    if kind == "crypto":
+        crypto = details.get("crypto") or {}
+        return {"payment_method": "stablecoin via Stripe", "chain": crypto.get("network"),
+                "crypto_asset": (crypto.get("token_currency") or "usdc").upper(), "crypto_txid": crypto.get("transaction_hash")}
+    return {"payment_method": kind} if kind else {}

@@ -81,6 +81,13 @@ async def _integrations(services: Services) -> None:
         await webhooks.deliver(services, keys(services))
     except Exception:  # noqa: BLE001 - keep the loop alive
         log.exception("webhook delivery failed")
+    if services.settings.opossum_chain_enabled:
+        from . import chains
+
+        try:
+            await chains.watch(services)
+        except Exception:  # noqa: BLE001
+            log.exception("chain watch failed")
     try:
         if await sanctions.due(services):
             await sanctions.refresh_ofac(services)

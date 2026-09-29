@@ -143,6 +143,7 @@ class QuoteIn(BaseModel):
     type: str = "purchase"
     fee_bearer: str = "recipient"
     invoice: str | None = None
+    rail: str = Field(default="card", max_length=24)
 
 
 class BackupIn(BaseModel):
@@ -390,8 +391,12 @@ async def quote_endpoint(body: QuoteIn, request: Request):
     keys(services)
     async with services.db.session() as session:
         recipient = await find_recipient(session, body.recipient)
-        q = await compute_quote(services, session, recipient, body.amount, body.currency.upper(), body.type, body.fee_bearer)
-    return {**q.as_dict(), "recipient": recipient_public(recipient)}
+        q = await compute_quote(services, session, recipient, body.amount, body.currency.upper(), body.type, body.fee_bearer, body.rail)
+    out = {**q.as_dict(), "recipient": recipient_public(recipient), "rail": body.rail}
+    if body.rail != "card":
+        out["network_fee"] = "paid by your wallet to the network; not part of the price"
+        out["fee_note"] = "the recipient gets the full amount on chain and is billed Opossum's fee"
+    return out
 
 
 @router.post("/verify")
@@ -698,7 +703,7 @@ async def my_payments(ctx=Depends(current_account), limit: int = Query(default=1
     async with services.db.session() as session:
         rows = (await session.execute(select(OpTransaction, OpRecipient).join(OpRecipient, OpRecipient.id == OpTransaction.recipient_id)
                                       .where(OpTransaction.owner_tag == tag).order_by(OpTransaction.created_at.desc()).limit(limit))).all()
-    return [owner_view(k, tx, r) for tx, r in rows]
+    return [owner_view(k, tx, r, services.settings) for tx, r in rows]
 
 
 @router.get("/payments/{tx_id}")
@@ -710,7 +715,7 @@ async def my_payment(tx_id: str, ctx=Depends(current_account)):
         if tx is None or tx.owner_tag != k.owner_tag(account.id):
             raise OpError(404, "unknown_payment", "no such payment")
         recipient = await session.get(OpRecipient, tx.recipient_id)
-    return owner_view(k, tx, recipient)
+    return owner_view(k, tx, recipient, services.settings)
 
 
 @router.get("/disclosures")

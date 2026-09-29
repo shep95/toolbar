@@ -252,6 +252,8 @@
     total_cost: 'total cost', recipient_receives: 'recipient received', fee_bearer: 'who paid fees', processor: 'processor',
     invoice_id: 'invoice id', invoice_reference: 'invoice reference', memo_commitment: 'proven note',
     payer_legal_name: 'my legal name', payer_identity_status: 'my identity status',
+    payment_method: 'payment method', chain: 'blockchain', crypto_asset: 'crypto asset', crypto_amount: 'crypto amount',
+    crypto_txid: 'blockchain transaction', deposit_address: 'receiving address', rate_usd: 'price used (usd)',
   };
   const AUDIENCES = {
     recipient: { label: 'recipient', fields: ['transaction_id', 'amount', 'currency', 'date', 'status'] },
@@ -276,7 +278,7 @@
   }
   const L = () => S.ledger;
   const baseCurrency = () => (S.ledger && S.ledger.settings.currency) || 'USD';
-  const live = (e) => e.status !== 'failed' && e.status !== 'cancelled' && e.status !== 'refunded' && !L().deleted[e.id];
+  const live = (e) => !['failed', 'cancelled', 'refunded', 'expired'].includes(e.status) && !L().deleted[e.id];
   const inBase = (e) => (e.currency || baseCurrency()) === baseCurrency();
 
   function suggestCategory(merchant, kind, recipientCategory) {
@@ -361,8 +363,13 @@
       merchant: p.recipient.name, category: suggestCategory(p.recipient.name, 'expense', p.recipient.category), auto: true,
       source: 'opossum', tx_id: p.id, status: p.status, mode: p.mode, test: p.test_money,
       fees: { opossum: p.opossum_fee, processor: p.processor_fee }, recipient_receives: p.recipient_receives,
-      receipt: p.receipt || null, ...(extra || {}),
+      receipt: p.receipt || null, ...chainOf(p), ...(extra || {}),
     };
+  }
+  const OPEN_CHAIN = ['awaiting_chain', 'confirming'];
+  function chainOf(p) {
+    if (!p.rail || p.rail === 'card') return {};
+    return { rail: p.rail, crypto: { asset: p.crypto_asset, amount: p.crypto_amount, received: p.crypto_received, txid: p.chain_txid } };
   }
   async function syncPayments() {
     const list = await api('/payments?limit=500');
@@ -370,9 +377,10 @@
     for (const p of list) {
       const e = L().entries.find((x) => x.tx_id === p.id);
       if (!e) {
-        if (p.status === 'settled' || p.status === 'pending_payment') { addEntry(entryFromPayment(p)); touched = true; }
-      } else if (e.status !== p.status || (!e.receipt && p.receipt)) {
+        if (p.status === 'settled' || p.status === 'pending_payment' || OPEN_CHAIN.includes(p.status)) { addEntry(entryFromPayment(p)); touched = true; }
+      } else if (e.status !== p.status || (!e.receipt && p.receipt) || (p.chain_txid && !(e.crypto && e.crypto.txid))) {
         e.status = p.status; e.receipt = p.receipt || e.receipt; e.date = (p.settled_at || p.created_at).slice(0, 10); e.modified = Date.now(); touched = true;
+        Object.assign(e, chainOf(p));
       }
     }
     if (touched) changed();
@@ -519,6 +527,9 @@
   function statusTag(e) {
     if (e.test) return h('span', { class: 'tag test' }, 'test money');
     if (e.status === 'pending_payment') return h('span', { class: 'tag' }, 'pending');
+    if (OPEN_CHAIN.includes(e.status)) return h('span', { class: 'tag' }, e.status === 'confirming' ? 'confirming' : 'awaiting wallet');
+    if (CHAIN_TROUBLE[e.status]) return h('span', { class: 'tag alarm' }, CHAIN_TROUBLE[e.status].tag);
+    if (e.status === 'expired') return h('span', { class: 'tag' }, 'expired');
     if (e.status === 'refunded') return h('span', { class: 'tag' }, 'refunded');
     if (e.status === 'failed' || e.status === 'cancelled') return h('span', { class: 'tag alarm' }, e.status);
     if (e.receipt) return h('span', { class: 'tag trust' }, 'signed');
@@ -532,6 +543,34 @@
     disclosure: 'the recipient sees your pseudonym plus only the fields you tick.',
     public: 'the recipient sees your legal name and email from your identity vault.',
   };
+  const CHAIN_TROUBLE = {
+    underpaid: { tag: 'underpaid', text: 'less than the quoted amount arrived before the quote ran out. contact the recipient to sort out the difference or a refund.' },
+    received_late: { tag: 'arrived late', text: 'the coins arrived after the price lock ended. the recipient decides whether to accept it at the new price or refund it.' },
+    review: { tag: 'in review', text: 'this payment is being reviewed by compliance before it can settle. you will see the outcome here.' },
+  };
+  const CHAIN_DONE = ['settled', 'expired', 'underpaid', 'received_late', 'review', 'refunded'];
+  function currentRecipient() { return S.recipients.find((r) => r.handle === $('#payRecipient').value); }
+  function railsChanged() {
+    const r = currentRecipient();
+    const rails = (r && r.rails) || [{ id: 'card', label: 'card' }];
+    const sel = $('#payRail');
+    const keep = rails.some((x) => x.id === sel.value) ? sel.value : rails[0].id;
+    options(sel, rails.map((x) => [x.id, x.label]), keep);
+    $('#payRailRow').hidden = rails.length < 2;
+    const onChain = sel.value !== 'card';
+    const note = $('#payRailNote');
+    note.hidden = !onChain;
+    if (onChain) {
+      $('#payCurrency').value = 'USD';
+      $('#payFeeBearer').value = 'recipient';
+      note.textContent = 'you send from your own wallet straight to the recipient. opossum never holds the coins. blockchains are public: '
+        + 'the amount, your wallet address and theirs can be seen by anyone, though not who you are. priced in usd; your wallet adds the network fee.';
+    }
+    $('#payCurrency').disabled = onChain;
+    $('#payFeeBearer').disabled = onChain;
+  }
+  $('#payRecipient').addEventListener('change', railsChanged);
+  $('#payRail').addEventListener('change', railsChanged);
   async function loadRecipients() {
     if (!S.recipients.length) S.recipients = await api('/recipients');
     return S.recipients;
@@ -546,8 +585,22 @@
       options($('#payCategory'), categoryOptions('suggest for me'), '');
       $('#payMode').value = L().settings.default_mode || 'pseudonymous';
     }
+    railsChanged();
     modeChanged();
+    renderOpenChain();
   };
+  function renderOpenChain() {
+    const open = L().entries.filter((e) => OPEN_CHAIN.includes(e.status) && !L().deleted[e.id]);
+    $('#payOpenChain').hidden = !open.length;
+    rows('#payOpenTable', open, (e, tr) => tr.append(td(e.date), td(e.merchant), td(railName(e.rail)),
+      td(e.crypto ? e.crypto.amount + ' ' + e.crypto.asset : fmt(cents(e.amount), e.currency), 'num'), h('td', null, statusTag(e)),
+      h('td', null, h('button', { class: 'btn quiet', type: 'button', on: { click: (ev) => guard(async () => showChain(await api('/payments/' + encodeURIComponent(e.tx_id))), ev.currentTarget) } }, 'show'))));
+  }
+  function railName(rail) {
+    if (!rail || rail === 'card') return 'card';
+    const r = S.recipients.flatMap((x) => x.rails || []).find((x) => x.id === rail);
+    return r ? r.label : rail;
+  }
   function modeChanged() {
     const mode = $('#payMode').value;
     $('#modeNote').textContent = MODE_NOTES[mode];
@@ -567,9 +620,11 @@
     return h('dl', { class: 'breakdown' },
       row('amount sent', fmt(cents(q.amount_sent), q.currency)),
       row('opossum fee · ' + q.fee_rule, fmt(cents(q.opossum_fee), q.currency)),
-      row('payment / network fee', fmt(cents(q.processor_fee), q.currency)),
+      q.rail && q.rail !== 'card' ? row('network fee', 'set by your wallet; not part of the price')
+        : row('payment / network fee', fmt(cents(q.processor_fee), q.currency)),
       row('total cost to you', fmt(cents(q.total_cost), q.currency), 'total'),
       row('recipient receives', fmt(cents(q.recipient_receives), q.currency), 'receives'),
+      q.fee_note ? row('note', q.fee_note) : '',
     );
   }
   $('#payForm').addEventListener('submit', (e) => {
@@ -580,14 +635,15 @@
     guard(async () => {
       const draft = {
         recipient: f.recipient.value, invoice: f.invoice.value.trim() || null, amount, currency: f.currency.value,
-        type: f.type.value, fee_bearer: f.fee_bearer.value, mode: f.mode.value,
+        type: f.type.value, fee_bearer: f.fee_bearer.value, mode: f.mode.value, rail: f.rail.value || 'card',
         disclose: f.mode.value === 'disclosure' ? ['legal_name', 'email'].filter((k) => f['disclose_' + k].checked) : [],
         message: f.message.value.trim(), category: f.category.value, note: f.note.value.trim(),
         business: f.business.checked, tax: f.tax.checked, reimbursable: f.reimbursable.checked, commit: f.commit.checked,
         idempotency_key: hex(random(16)),
       };
       if (draft.commit && !draft.note) { toast('write the note you want to be able to prove', 'alarm'); return; }
-      const q = await api('/quote', 'POST', { recipient: draft.recipient, amount, currency: draft.currency, type: draft.invoice ? 'invoice' : draft.type, fee_bearer: draft.fee_bearer });
+      if (draft.rail !== 'card') { draft.currency = 'USD'; draft.fee_bearer = 'recipient'; }
+      const q = await api('/quote', 'POST', { recipient: draft.recipient, amount, currency: draft.currency, type: draft.invoice ? 'invoice' : draft.type, fee_bearer: draft.fee_bearer, rail: draft.rail });
       S.quote = q; S.draft = draft;
       $('#payBreakdown').replaceChildren(breakdown(q));
       $('#payReviewNote').replaceChildren('to ', h('strong', null, q.recipient.name), ' · ', MODE_NOTES[draft.mode].split('.')[0] + '.',
@@ -607,6 +663,7 @@
       nonce: hex(random(16)), ts: Math.floor(Date.now() / 1000), idempotency_key: d.idempotency_key,
     };
     if (d.invoice) body.invoice = d.invoice;
+    if (d.rail && d.rail !== 'card') body.rail = d.rail;
     if (d.message) body.message_to_recipient = d.message;
     if (d.commit) { memo = { text: d.note, salt: hex(random(16)) }; body.memo_commitment = await sha256hex(memo.salt + ':' + memo.text); }
     if (confirmDuplicate) body.confirm_duplicate = true;
@@ -650,11 +707,89 @@
       location.assign(url.href);
       return;
     }
-    showPaid(p);
+    if (p.pay_on_chain) showChain(p); else showPaid(p);
     $('#payForm').reset();
+    railsChanged();
     $('#payMode').value = L().settings.default_mode || 'pseudonymous';
     S.draft = null; S.quote = null; $('#payConfirmRow').hidden = true;
   }, e.currentTarget));
+  // ------------------------------------------------------------ paying from your own wallet
+  let chainWatch = null;
+  function stopChainWatch() { if (chainWatch) { clearTimeout(chainWatch.timer); clearInterval(chainWatch.clock); chainWatch = null; } }
+  function walletLink(uri) {
+    // Only payment links for the two schemes we issue; anything else is not opened.
+    return /^(bitcoin:[13bc][a-zA-Z0-9]{20,90}\?amount=[0-9.]+|ethereum:0x[0-9a-fA-F]{40}@[0-9]+\/transfer\?address=0x[0-9a-fA-F]{40}&uint256=[0-9]+)$/.test(uri) ? uri : null;
+  }
+  function explorerLink(url) {
+    try { const u = new URL(url); return u.protocol === 'https:' ? u.href : null; } catch (err) { return null; }
+  }
+  function copyButton(text, what) {
+    return h('button', { class: 'btn', type: 'button', on: { click: () => navigator.clipboard.writeText(text).then(() => toast(what + ' copied', 'trust'), () => toast('copy was blocked', 'alarm')) } }, 'copy');
+  }
+  function left(iso) {
+    const ms = Date.parse(iso) - Date.now();
+    if (!(ms > 0)) return 'ended';
+    const m = Math.floor(ms / 60000), sec = Math.floor((ms % 60000) / 1000);
+    return m + ':' + String(sec).padStart(2, '0');
+  }
+  function chainState(p) {
+    const c = p.pay_on_chain || {};
+    if (p.status === 'awaiting_chain') return h('p', { class: 'chainstate' }, 'waiting for your payment · price held for ', h('strong', { id: 'chainClock' }, c.expires_at ? left(c.expires_at) : '—'));
+    if (p.status === 'confirming') return h('p', { class: 'chainstate' }, 'seen on the network · ', h('strong', null, String(p.confirmations || 0) + ' of ' + (c.confirmations_needed || '?')), ' confirmations');
+    if (p.status === 'expired') return h('p', { class: 'chainstate' }, 'the quote ran out and nothing arrived. do not send to this request now; start a new payment.');
+    if (CHAIN_TROUBLE[p.status]) return h('p', { class: 'chainstate' }, CHAIN_TROUBLE[p.status].text);
+    return h('p', { class: 'chainstate' }, 'payment ' + p.status);
+  }
+  function showChain(p) {
+    stopChainWatch();
+    if (p.status === 'settled') { showPaid(p); return; }
+    const c = p.pay_on_chain;
+    if (!c) { $('#payResult').replaceChildren(h('div', { class: 'verdict' }, h('h4', null, railName(p.rail) + ' · ' + p.status), chainState(p))); return; }
+    const link = walletLink(c.uri);
+    const qr = typeof c.qr === 'string' && c.qr.startsWith('data:image/svg+xml') ? h('img', { class: 'qr', src: c.qr, alt: 'qr code for this payment', width: 176, height: 176 }) : h('div', { class: 'qr' });
+    const tx = c.txid && c.explorer && explorerLink(c.explorer);
+    $('#payResult').replaceChildren(
+      h('div', { class: 'verdict ok' }, h('h4', null, 'pay ' + c.label + ' from your wallet'),
+        h('div', { class: 'onchain' }, qr, h('div', null,
+          h('p', { class: 'faint' }, 'send exactly'),
+          h('div', { class: 'copyline' }, h('span', { class: 'code big' }, c.amount + ' ' + c.asset), copyButton(c.amount, 'amount')),
+          h('p', { class: 'faint' }, 'to'),
+          h('div', { class: 'copyline' }, h('span', { class: 'code' }, c.address), copyButton(c.address, 'address')),
+          link ? h('a', { class: 'btn solid', href: link, rel: 'noopener' }, 'open in wallet') : '')),
+        chainState(p),
+        h('dl', { class: 'claims' },
+          h('dt', null, 'price'), h('dd', null, fmt(cents(p.total_cost), p.currency) + (c.asset === 'BTC' ? ' at ' + c.rate_usd + ' usd per btc' : '')),
+          h('dt', null, 'network fee'), h('dd', null, c.network_fee),
+          h('dt', null, 'transaction'), h('dd', { class: 'code' }, p.id),
+          c.txid ? h('dt', null, 'on chain') : '', c.txid ? h('dd', { class: 'code' }, tx ? h('a', { href: tx, target: '_blank', rel: 'noopener noreferrer' }, c.txid) : c.txid) : '')),
+      h('p', { class: 'faint' }, c.asset === 'USDC'
+        ? 'the odd cents identify your payment; send the exact amount, on ' + c.label.replace('USDC on ', '') + ' only. sending on another network loses the funds.'
+        : 'this address is only for this payment. it settles by itself after ' + c.confirmations_needed + ' confirmations; you can leave this page.'),
+    );
+    if (!OPEN_CHAIN.includes(p.status)) return;
+    chainWatch = { id: p.id, timer: null, clock: null };
+    chainWatch.clock = setInterval(() => { const el = $('#chainClock'); if (el && c.expires_at) el.textContent = left(c.expires_at); }, 1000);
+    const poll = async () => {
+      if (!chainWatch || chainWatch.id !== p.id || !S.ledger) return;
+      if (S.room !== 'pay') { chainWatch.timer = setTimeout(poll, 20000); return; }
+      let next;
+      try { next = await api('/payments/' + encodeURIComponent(p.id)); } catch (err) { chainWatch.timer = setTimeout(poll, 30000); return; }
+      if (!chainWatch || chainWatch.id !== p.id) return;
+      if (next.status !== p.status || (next.confirmations || 0) !== (p.confirmations || 0)) {
+        await syncPayments().catch(() => {});
+        if (CHAIN_DONE.includes(next.status)) {
+          stopChainWatch();
+          if (next.status === 'settled') { showPaid(next); toast('paid · receipt signed', 'trust'); } else showChain(next);
+          renderOpenChain();
+          return;
+        }
+        showChain(next);
+        return;
+      }
+      chainWatch.timer = setTimeout(poll, 15000);
+    };
+    chainWatch.timer = setTimeout(poll, 15000);
+  }
   function showPaid(p) {
     $('#payResult').replaceChildren(
       h('div', { class: 'verdict ok' }, h('h4', null, p.status === 'settled' ? 'paid · receipt signed' : 'payment ' + p.status),
@@ -663,7 +798,8 @@
           h('dt', null, 'recipient saw you as'), h('dd', { class: 'code' }, p.payer_pseudonym),
           h('dt', null, 'also shown to them'), h('dd', null, p.shown_to_recipient.length ? p.shown_to_recipient.join(', ') : 'nothing else'),
           h('dt', null, 'total cost'), h('dd', null, fmt(cents(p.total_cost), p.currency)),
-          h('dt', null, 'recipient received'), h('dd', null, fmt(cents(p.recipient_receives), p.currency)))),
+          h('dt', null, 'recipient received'), h('dd', null, fmt(cents(p.recipient_receives), p.currency)),
+          p.chain_txid ? h('dt', null, railName(p.rail)) : '', p.chain_txid ? h('dd', { class: 'code' }, p.crypto_amount + ' ' + p.crypto_asset + ' · ' + p.chain_txid) : '')),
       p.test_money ? h('p', { class: 'faint' }, 'sandbox: test money only. the receipt says so, so it cannot pass as a real payment.') : '',
     );
   }
@@ -1343,9 +1479,10 @@
     clearTimeout(S.saveTimer);
     if (S.ledgerRaw) S.ledgerRaw.fill(0);
     S.ledgerRaw = null; S.ledgerKey = null; S.ledger = null; S.device = null; S.quote = null; S.draft = null; S.recipients = [];
-    selectedReceipts.clear(); lastPackage = null;
+    selectedReceipts.clear(); lastPackage = null; stopChainWatch();
     $$('#app tbody').forEach((b) => b.replaceChildren());
     $$('#app form').forEach((f) => f.reset());
+    $('#payOpenChain').hidden = true;
     ['#packageOut', '#payBreakdown', '#payResult', '#ovMetrics', '#bgMetrics', '#projection', '#budgetList', '#goalList', '#reserveInfo', '#ovBudgets', '#printSheet'].forEach((q) => $(q).replaceChildren());
     $('#packageOut').hidden = true; $('#packageActions').hidden = true; $('#mfaSetup').hidden = true; $('#mfaSecret').textContent = '';
     const d = $('#confirm'); if (d.open) d.close();

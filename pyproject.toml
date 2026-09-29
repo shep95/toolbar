@@ -17,6 +17,9 @@ dependencies = [
     "pydantic-settings>=2.3",
     "email-validator>=2.0",
     "cryptography>=43",
+    "coincurve>=20",
+    "pycryptodome>=3.20",
+    "segno>=1.6",
 ]
 
 [project.optional-dependencies]

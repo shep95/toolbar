@@ -93,15 +93,63 @@ async def invoices(ctx=Depends(current_recipient)):
     return [invoice_json(i) for i in rows]
 
 
+class RefundIn(BaseModel):
+    # On-chain payments: the transaction that sent the refund from your wallet.
+    txid: str | None = Field(default=None, max_length=100)
+
+
 @router.post("/payments/{tx_id}/refund")
-async def refund(tx_id: str, ctx=Depends(current_recipient)):
+async def refund(tx_id: str, body: RefundIn | None = None, ctx=Depends(current_recipient)):
     """Refund one of your own settled payments in full."""
     from .relay import refund_payment
 
     services, k, recipient = ctx
     tx = await refund_payment(services, k, tx_id, actor=f"merchant:{recipient.handle}", reason="refunded by merchant",
-                              recipient_id=recipient.id)
+                              recipient_id=recipient.id, chain_refund_txid=(body.txid if body else None))
     return {"id": tx.id, "status": tx.status}
+
+
+class ChainSetup(BaseModel):
+    btc_xpub: str | None = Field(default=None, max_length=130)
+    btc_first_address: str | None = Field(default=None, max_length=100)
+    btc_address_type: str | None = Field(default=None, max_length=12)
+    usdc_address: str | None = Field(default=None, max_length=42)
+
+
+async def apply_chain_setup(services, k, recipient_id, body: ChainSetup) -> dict:
+    from .chainutil import ChainError
+    from .chains import configure, rail_label, rails_for
+
+    try:
+        config = configure(body.btc_xpub, body.btc_first_address, body.btc_address_type, body.usdc_address)
+    except ChainError as exc:
+        raise OpError(400, "invalid_chain_setup", str(exc)) from None
+    rails = rails_for(config)
+    async with services.db.session() as session, session.begin():
+        row = await session.get(OpRecipient, recipient_id)
+        row.chain_config_enc = k.seal(config, f"op_recipients:{row.id}:chain")
+        row.chain_rails = ",".join(rails)
+        from . import audit
+
+        await audit.append(session, "merchant", "chain_setup", row.handle, rails=rails)
+    return {"rails": [{"id": r, "label": rail_label(r)} for r in rails],
+            "btc_first_address": config.get("btc", {}).get("first_address"), "usdc_address": config.get("evm", {}).get("address")}
+
+
+@router.put("/chain")
+async def chain_setup(body: ChainSetup, ctx=Depends(current_recipient)):
+    """Accept crypto straight to your own wallet. Opossum never holds keys or coins:
+    give a Bitcoin extended public key (and your wallet's first receiving address,
+    to confirm the key type) and/or a USDC receiving address."""
+    services, k, recipient = ctx
+    return await apply_chain_setup(services, k, recipient.id, body)
+
+
+@router.get("/fees")
+async def fees(ctx=Depends(current_recipient)):
+    """Opossum fees on direct on-chain payments, billed to you."""
+    _, _, recipient = ctx
+    return {"fees_due_usd": money(recipient.fees_due or 0)}
 
 
 class WebhookIn(BaseModel):
