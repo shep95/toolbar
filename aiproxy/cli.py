@@ -10,20 +10,35 @@ from __future__ import annotations
 import argparse
 import asyncio
 import secrets
+import sys
 from datetime import timedelta
 
 from .billing import BillingEngine
 from .config import get_settings
-from .db import Database
+from .db import DB_UNAVAILABLE_ERRORS, Database
 
 
-async def _init_db() -> None:
+async def _init_db(attempts: int = 30, delay: float = 2.0) -> None:
+    """Create missing tables, waiting for the database to come up.
+
+    On Railway (and most platforms) the app container can start a few
+    seconds before the database accepts connections.
+    """
     db = Database.from_settings(get_settings())
     try:
-        await db.create_all()
+        for attempt in range(1, attempts + 1):
+            try:
+                await db.create_all()
+                break
+            except DB_UNAVAILABLE_ERRORS as exc:
+                if attempt == attempts:
+                    raise
+                print(f"database not reachable yet ({type(exc).__name__}); retry {attempt}/{attempts - 1} in {delay:.0f}s",
+                      file=sys.stderr, flush=True)
+                await asyncio.sleep(delay)
     finally:
         await db.dispose()
-    print("database schema is up to date")
+    print("database schema is up to date", flush=True)
 
 
 async def _reconcile() -> None:

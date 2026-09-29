@@ -5,7 +5,7 @@ WORKDIR /app
 
 COPY pyproject.toml ./
 COPY aiproxy ./aiproxy
-RUN pip install --no-cache-dir . && useradd --create-home app
+RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir . && useradd --create-home app
 USER app
 
 EXPOSE 8000

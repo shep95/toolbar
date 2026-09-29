@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 from decimal import Decimal
 from functools import lru_cache
+from urllib.parse import parse_qsl, urlencode
 
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -121,6 +122,18 @@ class Settings(BaseSettings):
             value = "postgresql://" + value[len("postgres://") :]
         if value.startswith("postgresql://"):
             value = "postgresql+asyncpg://" + value[len("postgresql://") :]
+        if value.startswith("postgresql+asyncpg://") and "?" in value:
+            # libpq-style options (as many hosts hand out) are not understood
+            # by asyncpg: `sslmode=require` must be spelled `ssl=require`.
+            base, _, query = value.partition("?")
+            params = []
+            for key, val in parse_qsl(query, keep_blank_values=True):
+                if key == "sslmode":
+                    key = "ssl"
+                elif key == "channel_binding":
+                    continue
+                params.append((key, val))
+            value = base + ("?" + urlencode(params) if params else "")
         return value
 
     def env_value(self, name: str) -> str | None:

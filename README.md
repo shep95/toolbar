@@ -295,11 +295,18 @@ python -m aiproxy init-db
 uvicorn aiproxy.main:app --reload
 ```
 
-To deploy on Railway or Render:
+**Railway (recommended).** The repository includes `railway.json`. Follow
+[docs/railway.md](docs/railway.md): deploy from GitHub, add PostgreSQL, set
+`ADMIN_API_TOKEN` and provider keys, generate a domain. Then verify the live
+deployment:
 
-1. Create a PostgreSQL database and a web service from this repository. It builds from the `Dockerfile`.
-2. Set `DATABASE_URL`, `ADMIN_API_TOKEN` and the provider keys you want.
-3. For Stripe, point a webhook at `https://<host>/stripe/webhook`.
+```bash
+ADMIN_API_TOKEN=... python scripts/smoke_test.py --url https://<name>.up.railway.app
+```
+
+**Render or another container host.** Create a PostgreSQL database and a web
+service from the `Dockerfile`, then set `DATABASE_URL`, `ADMIN_API_TOKEN` and
+the provider keys.
 
 On a VPS, run the container behind Caddy or nginx with TLS, and set
 `FORWARDED_ALLOW_IPS` to the reverse proxy's address.

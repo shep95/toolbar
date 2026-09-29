@@ -69,6 +69,8 @@ def test_usage_shapes():
 def test_database_url_normalisation():
     s = Settings(_env_file=None, database_url="postgres://u:p@host:5432/db")
     assert s.database_url == "postgresql+asyncpg://u:p@host:5432/db"
+    s = Settings(_env_file=None, database_url="postgresql://u:p@h:5432/db?sslmode=require&channel_binding=prefer")
+    assert s.database_url == "postgresql+asyncpg://u:p@h:5432/db?ssl=require"
 
 
 def test_scrub_removes_identifiers_but_not_normal_text():
@@ -88,3 +90,22 @@ def test_http_client_uses_http2_and_long_keepalive():
     pool = client._transport._pool
     assert pool._http2 is True
     assert pool._keepalive_expiry == 120.0
+
+
+async def test_init_db_waits_for_database(monkeypatch, tmp_path):
+    from aiproxy import cli
+    from aiproxy.db import Database
+
+    calls = {"n": 0}
+    real = Database.create_all
+
+    async def flaky(self):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ConnectionRefusedError("not up yet")
+        await real(self)
+
+    monkeypatch.setattr(Database, "create_all", flaky)
+    monkeypatch.setattr(cli, "get_settings", lambda: Settings(_env_file=None, database_url=f"sqlite+aiosqlite:///{tmp_path}/x.db"))
+    await cli._init_db(attempts=5, delay=0)
+    assert calls["n"] == 3
