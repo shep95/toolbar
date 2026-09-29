@@ -233,7 +233,7 @@ async def test_admin_reporting_includes_transactions(client, make_user):
     assert overview["transactions"] == 1 and overview["transaction_revenue"] == "0.030000"
     assert overview["total_revenue"] == "0.030000"
     usage = (await client.get("/admin/api/usage", headers=ADMIN)).json()
-    assert any(r["provider"] == "transactions" and r["revenue"] == "0.030000" for r in usage["daily"])
+    assert any(r["provider"] == "domain:general" and r["revenue"] == "0.030000" for r in usage["daily"])
 
 
 async def test_user_created_with_country(client):

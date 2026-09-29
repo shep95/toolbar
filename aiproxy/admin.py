@@ -26,6 +26,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import case, func, select, update
 from sqlalchemy.exc import IntegrityError
 
+from .domains import DEFAULT_DOMAIN, DOMAINS, pricing_key
 from .countries import (
     DEFAULT_MULTIPLIERS,
     INCOME_GROUP,
@@ -162,9 +163,19 @@ class CreditRequest(BaseModel):
 
 
 class KeyCreate(BaseModel):
-    provider: str
+    # AI provider the key may reach through the AI gateway, or "any".
+    provider: str = PROVIDER_ANY
     name: str | None = Field(default=None, max_length=100)
     rate_limit_per_minute: int | None = Field(default=None, ge=1, le=100_000)
+    # Lock the key to one transaction domain (crypto, brokerage...); omit for all.
+    domain: str | None = None
+
+    @field_validator("domain")
+    @classmethod
+    def _known_domain(cls, value: str | None) -> str | None:
+        if value is not None and value not in DOMAINS:
+            raise ValueError(f"domain must be one of: {', '.join(sorted(DOMAINS))}")
+        return value
 
 
 class PricingUpsert(BaseModel):
@@ -199,6 +210,7 @@ def _key_json(key: ApiKey) -> dict:
         "prefix": key.key_prefix,
         "name": key.name,
         "provider": key.provider,
+        "domain": key.domain,
         "rate_limit_per_minute": key.rate_limit_per_minute,
         "status": key.status,
         "created_at": _iso(key.created_at),
@@ -358,18 +370,81 @@ async def delete_country_pricing(country: str, services: Services = Depends(requ
     return {"country": code, "multiplier": str(default_multiplier(code)), "reset_to_default": True}
 
 
+def _domain_filter(domain: str):
+    if domain not in DOMAINS:
+        raise HTTPException(422, f"domain must be one of: {', '.join(sorted(DOMAINS))}")
+    if domain == DEFAULT_DOMAIN:
+        return (Charge.domain == domain) | (Charge.domain.is_(None))
+    return Charge.domain == domain
+
+
+@api.get("/domains")
+async def domains(services: Services = Depends(require_admin), days: int = Query(default=30, ge=1, le=366)):
+    """Every transaction domain with its fee, key count and recent volume."""
+    since = utcnow() - timedelta(days=days)
+    domain_col = func.coalesce(Charge.domain, DEFAULT_DOMAIN)
+    async with services.db.session() as session:
+        stats = {
+            row[0]: (row[1], row[2])
+            for row in (
+                await session.execute(
+                    select(domain_col, func.count(Charge.id), func.coalesce(func.sum(Charge.fee_charged), 0))
+                    .where(Charge.timestamp >= since)
+                    .group_by(domain_col)
+                )
+            ).all()
+        }
+        keys = {
+            row[0]: row[1]
+            for row in (
+                await session.execute(
+                    select(ApiKey.domain, func.count(ApiKey.id))
+                    .where(ApiKey.status == KeyStatus.ACTIVE, ApiKey.domain.is_not(None))
+                    .group_by(ApiKey.domain)
+                )
+            ).all()
+        }
+        ai = (
+            await session.execute(
+                select(func.count(Transaction.id), func.coalesce(func.sum(Transaction.fee_charged), 0)).where(
+                    Transaction.timestamp >= since, Transaction.status == TxStatus.SUCCESS
+                )
+            )
+        ).one()
+    result = []
+    for name, domain in DOMAINS.items():
+        base = await services.billing.price_for(pricing_key(name), None)
+        count, revenue = stats.get(name, (0, 0))
+        entry = {
+            **domain.describe(),
+            "base_fee_usd": _money(base.fee_for(None)),
+            "pricing_key": pricing_key(name),
+            "locked_keys": keys.get(name, 0),
+            "transactions": count,
+            "revenue": _money(revenue),
+        }
+        if name == "ai":  # the built-in AI gateway records its requests separately
+            entry["gateway_requests"] = ai[0]
+            entry["gateway_revenue"] = _money(ai[1])
+        result.append(entry)
+    return {"days": days, "domains": result}
+
+
 @api.get("/charges")
 async def list_charges(
     services: Services = Depends(require_admin),
     user_id: uuid.UUID | None = None,
+    domain: str | None = Query(default=None, max_length=32),
     type: str | None = Query(default=None, max_length=64),
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ):
-    """General transactions recorded through /v1/transactions."""
+    """Transactions recorded through /v1/transactions, across all domains."""
     stmt = select(Charge).order_by(Charge.timestamp.desc()).limit(limit).offset(offset)
     if user_id:
         stmt = stmt.where(Charge.user_id == user_id)
+    if domain:
+        stmt = stmt.where(_domain_filter(domain))
     if type:
         stmt = stmt.where(Charge.type == type)
     async with services.db.session() as session:
@@ -493,6 +568,7 @@ async def issue_key(user_id: uuid.UUID, payload: KeyCreate, services: Services =
             key_prefix=display_prefix(raw_key),
             name=payload.name,
             provider=provider,
+            domain=payload.domain,
             rate_limit_per_minute=payload.rate_limit_per_minute,
         )
         session.add(key)
@@ -549,9 +625,14 @@ async def list_pricing(services: Services = Depends(require_admin)):
 @api.put("/pricing")
 async def upsert_pricing(payload: PricingUpsert, services: Services = Depends(require_admin)):
     provider = payload.provider
-    # "transactions" prices general transactions; its model is the transaction type.
-    if provider not in ("*", "transactions"):
+    # A domain name prices that domain (model = transaction type or "*");
+    # "transactions" is the general domain.
+    if provider in DOMAINS:
+        provider = pricing_key(provider)
+    elif provider not in ("*", "transactions") and not provider.startswith("domain:"):
         _valid_provider(services, provider, allow_any=False)
+    elif provider.startswith("domain:") and provider.split(":", 1)[1] not in DOMAINS:
+        raise HTTPException(422, "unknown domain")
     async with services.db.session() as session, session.begin():
         row = (
             await session.execute(select(Pricing).where(Pricing.provider == provider, Pricing.model == payload.model))
@@ -657,12 +738,13 @@ async def usage(
             )
         ).all()
         charge_day = func.date(Charge.timestamp)
+        charge_domain = func.coalesce(Charge.domain, DEFAULT_DOMAIN)
         charge_filters = [Charge.timestamp >= since] + ([Charge.user_id == user_id] if user_id else [])
         charge_daily = (
             await session.execute(
-                select(charge_day, func.count(Charge.id), func.coalesce(func.sum(Charge.fee_charged), 0))
+                select(charge_day, charge_domain, func.count(Charge.id), func.coalesce(func.sum(Charge.fee_charged), 0))
                 .where(*charge_filters)
-                .group_by(charge_day)
+                .group_by(charge_day, charge_domain)
                 .order_by(charge_day)
             )
         ).all()
@@ -678,7 +760,7 @@ async def usage(
         for r in daily
     ] + [
         # General transactions appear as their own line.
-        {"day": str(r[0]), "provider": "transactions", "requests": r[1], "successful": r[1], "revenue": _money(r[2]), "tokens": 0}
+        {"day": str(r[0]), "provider": f"domain:{r[1]}", "requests": r[2], "successful": r[2], "revenue": _money(r[3]), "tokens": 0}
         for r in charge_daily
     ]
     rows.sort(key=lambda r: (r["day"], r["provider"]))

@@ -92,6 +92,9 @@ class ApiKey(Base):
     name: Mapped[str | None] = mapped_column(String(100))
     # Which upstream this key may reach: openai / anthropic / mistral / any.
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Optional lock to one transaction domain (see domains.py). NULL = any
+    # domain. A key locked to a non-AI domain cannot use the AI gateway.
+    domain: Mapped[str | None] = mapped_column(String(32))
     # Per-key override of the global requests-per-minute limit.
     rate_limit_per_minute: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
@@ -204,6 +207,9 @@ class Charge(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     api_key_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("api_keys.id", ondelete="CASCADE"), nullable=False)
     reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Domain of business (general, ai, brokerage, crypto, payments...). NULL on
+    # rows recorded before domains existed, which count as general.
+    domain: Mapped[str | None] = mapped_column(String(32))
     type: Mapped[str] = mapped_column(String(64), nullable=False)
     # The transaction's own value, for the caller's records (not moved by us).
     amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
@@ -211,6 +217,8 @@ class Charge(Base):
     country: Mapped[str | None] = mapped_column(String(2))
     description: Mapped[str | None] = mapped_column(String(500))
     metadata_json: Mapped[str | None] = mapped_column(Text)
+    # Domain-specific fields, validated per domain (symbol, asset, network...).
+    attributes_json: Mapped[str | None] = mapped_column(Text)
     fee_charged: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
     fee_country: Mapped[str | None] = mapped_column(String(2))
     fee_multiplier: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)

@@ -100,13 +100,14 @@
           <button>Adjust balance</button>
         </form>
         <form id="newKey">
-          <select name="provider" aria-label="provider" id="keyProvider"><option>any</option></select>
+          <select name="domain" aria-label="domain" id="keyDomain"><option value="">all domains</option></select>
+          <select name="provider" aria-label="AI provider" id="keyProvider"><option>any</option></select>
           <input name="name" placeholder="key label">
           <input name="rate_limit_per_minute" type="number" min="1" placeholder="req/min (default)">
           <button class="primary">Issue key</button>
         </form>
         <div id="newSecret" class="secret hidden"></div>
-        <div class="scroll"><table id="keys"><thead><tr><th>Prefix</th><th>Label</th><th>Provider</th><th>Status</th><th>Last used</th><th></th></tr></thead><tbody></tbody></table></div>
+        <div class="scroll"><table id="keys"><thead><tr><th>Prefix</th><th>Label</th><th>Domain</th><th>Provider</th><th>Status</th><th>Last used</th><th></th></tr></thead><tbody></tbody></table></div>
         <p><button id="toggleStatus"></button></p>
       </section>
     </div>
@@ -125,6 +126,12 @@
     </section>
 
     <section style="margin-top:16px">
+      <h2>Domains</h2>
+      <p class="muted">Each kind of digital business has its own transaction types and checked fields. Price a domain with a pricing rule whose provider is the domain name.</p>
+      <div class="scroll"><table id="domains"><thead><tr><th>Domain</th><th>Examples</th><th>Types</th><th>Fee</th><th>Locked keys</th><th>30-day tx</th><th>30-day revenue</th></tr></thead><tbody></tbody></table></div>
+    </section>
+
+    <section style="margin-top:16px">
       <h2>Fees by country</h2>
       <p class="muted" id="countrySummary"></p>
       <form id="countryOverride">
@@ -137,7 +144,7 @@
 
     <section style="margin-top:16px">
       <h2>Recent transactions (all types)</h2>
-      <div class="scroll"><table id="charges"><thead><tr><th>Time</th><th>User</th><th>Type</th><th>Reference</th><th>Amount</th><th>Country</th><th>Fee</th></tr></thead><tbody></tbody></table></div>
+      <div class="scroll"><table id="charges"><thead><tr><th>Time</th><th>User</th><th>Domain</th><th>Type</th><th>Reference</th><th>Amount</th><th>Country</th><th>Fee</th></tr></thead><tbody></tbody></table></div>
     </section>
 
     <section style="margin-top:16px">
@@ -237,6 +244,23 @@
     fillSelect('#keyProvider', 'any'); fillSelect('#priceProvider', '*');
   }
 
+  async function loadDomains() {
+    const d = await api('/domains');
+    const keySel = $('#keyDomain'); keySel.replaceChildren();
+    const all = document.createElement('option'); all.value = ''; all.textContent = 'all domains'; keySel.appendChild(all);
+    const priceSel = $('#priceProvider');
+    d.domains.forEach((x) => {
+      const o = document.createElement('option'); o.value = x.name; o.textContent = 'domain: ' + x.title; keySel.appendChild(o);
+      const p = document.createElement('option'); p.value = x.name; p.textContent = 'domain: ' + x.title; priceSel.appendChild(p);
+    });
+    fill('#domains', d.domains, (x, tr) => {
+      const types = Array.isArray(x.types) ? x.types.join(', ') : 'any';
+      const tx = x.transactions + (x.gateway_requests ? ' + ' + x.gateway_requests + ' gateway' : '');
+      const rev = Number(x.revenue) + Number(x.gateway_revenue || 0);
+      tr.append(cell(x.title), cell(x.examples), cell(types), cell(money(x.base_fee_usd)), cell(x.locked_keys), cell(tx), cell(money(rev)));
+    });
+  }
+
   async function loadUsers() {
     users = await api('/users?limit=200');
     fill('#users', users, (u, tr) => {
@@ -258,7 +282,7 @@
     $('#toggleStatus').textContent = selected.status === 'active' ? 'Suspend user' : 'Reactivate user';
     $('#toggleStatus').className = selected.status === 'active' ? 'danger' : '';
     fill('#keys', selected.keys, (k, tr) => {
-      tr.append(cell(k.prefix + '…'), cell(k.name || ''), cell(k.provider), cell(k.status, pill(k.status)), cell(when(k.last_used_at)));
+      tr.append(cell(k.prefix + '…'), cell(k.name || ''), cell(k.domain || 'all'), cell(k.provider), cell(k.status, pill(k.status)), cell(when(k.last_used_at)));
       const td = document.createElement('td');
       if (k.status === 'active') td.appendChild(button('Revoke', async () => {
         if (!confirm('Revoke key ' + k.prefix + '…? This cannot be undone.')) return;
@@ -298,7 +322,7 @@
     const byId = Object.fromEntries(users.map((u) => [u.id, u.email]));
     const charges = await api('/charges?limit=50');
     fill('#charges', charges, (t, tr) => tr.append(
-      cell(when(t.created_at)), cell(byId[t.user_id] || t.user_id.slice(0, 8)), cell(t.type), cell(t.reference),
+      cell(when(t.created_at)), cell(byId[t.user_id] || t.user_id.slice(0, 8)), cell(t.domain), cell(t.type), cell(t.reference),
       cell(t.amount != null ? t.amount + ' ' + (t.currency || '') : ''), cell(t.country || ''), cell(money(t.fee.amount_usd))));
     const txs = await api('/transactions?limit=50');
     fill('#txs', txs, (t, tr) => tr.append(
@@ -312,7 +336,7 @@
   async function guard(fn) { try { msg(''); await fn(); } catch (e) { msg(e.message, true); } }
   async function refresh() {
     await guard(async () => {
-      await loadOverview(); await loadProviders(); await loadUsers(); await loadPricing(); await loadCountries(); await loadActivity();
+      await loadOverview(); await loadProviders(); await loadDomains(); await loadUsers(); await loadPricing(); await loadCountries(); await loadActivity();
       $('#app').classList.remove('hidden'); msg('');
     });
   }
@@ -361,6 +385,7 @@
     e.preventDefault(); const d = formData(e.target);
     guard(async () => {
       const body = { provider: d.provider, name: d.name || null };
+      if (d.domain) body.domain = d.domain;
       if (d.rate_limit_per_minute) body.rate_limit_per_minute = Number(d.rate_limit_per_minute);
       const k = await api('/users/' + selected.id + '/keys', { method: 'POST', body: JSON.stringify(body) });
       await openUser(selected.id);

@@ -3,7 +3,7 @@
 A prepaid, per-transaction fee platform with a built-in universal AI API
 gateway.
 
-- **Any kind of transaction.** Apps record payments, orders, transfers, bookings or anything else through one API. Each transaction is charged a small fee from the account's prepaid balance.
+- **Any kind of digital business.** One API records transactions across eight domains: AI APIs, brokerage and trading, crypto, payments, remittance and FX, commerce, digital goods and gaming, and general. Each transaction is charged a small fee from the account's prepaid balance.
 - **AI requests.** Users call 40 built-in AI providers across 11 countries through one key, and each completed request is a transaction too.
 - **Fair worldwide.** The base fee is $0.03 in high-income economies and scales down with each country's World Bank income group, to as little as $0.006.
 - **Prepaid balances.** Users top up by card through Stripe Checkout, which can show the price in their own currency.
@@ -31,7 +31,9 @@ curl https://your-host.example/v1/transactions \
 | Field | Required | Notes |
 |---|---|---|
 | `reference` | yes | Your own ID for the transaction. Sending the same reference again returns the original record and is never charged twice, so retries are safe. Reusing it for a different transaction returns 409. |
-| `type` | no | Any label, such as `payment`, `order`, `transfer` or `booking`. Defaults to `transaction`. Admins can price types differently. |
+| `domain` | no | The kind of business, from the domains below. Defaults to the key's domain, or else `general`. |
+| `type` | depends | In `general`, any label, defaulting to `transaction`. In other domains, one of that domain's types (required). Admins can price types differently. |
+| `attributes` | depends | Domain-specific fields, checked per domain (see below) |
 | `amount`, `currency` | no | The transaction's own value, in any ISO 4217 currency, kept for your records |
 | `country` | no | Where the transaction happened (ISO 3166 alpha-2), kept for your records |
 | `description`, `metadata` | no | Up to 500 characters, and up to 20 simple key/value pairs |
@@ -44,6 +46,44 @@ Other endpoints:
 Refusals: an unknown or revoked key gets 401, a suspended account 403, and a
 balance too low for the fee 402. Nothing is recorded or charged in those
 cases.
+
+## Domains
+
+Each domain is a kind of digital business, with its own transaction types and
+its own `attributes`. Those are checked on the way in, so every record in a
+domain has the same shape.
+
+| Domain | For | Types | Attributes (required ones in bold) |
+|---|---|---|---|
+| `ai` | AI APIs you run yourself | request, completion, embedding, image, audio, fine_tune | provider, model, input_tokens, output_tokens |
+| `brokerage` | Robinhood-style brokers and trading apps | buy, sell, short, cover, option_buy, option_sell, dividend, deposit, withdrawal, transfer, fee | **symbol**, **quantity** (for trades), asset_class, price, exchange, order_type |
+| `crypto` | MoonPay-style on-ramps, exchanges, wallets | onramp, offramp, buy, sell, swap, send, receive, stake, unstake | **asset** (**to_asset** for swaps), quantity, price, network, tx_hash, wallet_address |
+| `payments` | Checkouts, payouts, peer-to-peer | charge, refund, payout, p2p, invoice, subscription, chargeback | method, card_brand, counterparty |
+| `remittance` | Cross-border money transfer and FX | send, receive, fx | **destination_country** (send), **destination_currency** (fx), fx_rate, channel |
+| `commerce` | Online stores and marketplaces | order, refund, fulfillment, cancellation | items, merchant, sku |
+| `digital_goods` | In-app purchases, games, gift cards | purchase, redemption, gift, subscription, in_app | sku, platform, title |
+| `general` | Anything else | any | none |
+
+The built-in AI gateway's own requests are recorded automatically and are
+not sent through this API.
+
+```bash
+# A brokerage recording a stock purchase
+curl https://your-host.example/v1/transactions -H "Authorization: Bearer apx_..." -H "Content-Type: application/json" \
+  -d '{"reference": "trade-88121", "domain": "brokerage", "type": "buy", "amount": "2275.20", "currency": "USD",
+       "attributes": {"symbol": "AAPL", "quantity": "10", "price": "227.52", "order_type": "limit"}}'
+
+# A crypto on-ramp recording a purchase of bitcoin
+curl https://your-host.example/v1/transactions -H "Authorization: Bearer apx_..." -H "Content-Type: application/json" \
+  -d '{"reference": "onramp-5531", "domain": "crypto", "type": "onramp", "amount": "100", "currency": "EUR",
+       "country": "DE", "attributes": {"asset": "BTC", "quantity": "0.0015", "network": "bitcoin"}}'
+```
+
+- **Keys locked to a domain.** When issuing a key, an admin can lock it to one domain. A crypto business then gets a key that can only record crypto transactions, never AI or brokerage ones, and cannot use the AI gateway. With a locked key, `domain` can be left out.
+- **Pricing per domain.** In the pricing panel, a rule whose provider is a domain name prices that domain. Setting the model to a type prices just that type, such as `crypto` / `onramp`. Country adjustment then applies on top.
+- **Discovery.** `GET /v1/domains` lists every domain the key can use, with its types, attributes and this account's fee.
+- **Admin view.** The **Domains** panel shows each domain's fee, locked keys and 30-day volume and revenue.
+- **Adding a domain** is one entry in `aiproxy/domains.py`.
 
 ## Fees by country
 

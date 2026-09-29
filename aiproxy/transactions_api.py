@@ -28,6 +28,7 @@ from sqlalchemy import select
 from .billing import BillingRejected
 from .countries import income_group, normalise_country, plain
 from .db import DB_UNAVAILABLE_ERRORS
+from .domains import DEFAULT_DOMAIN, DOMAINS, DomainError, pricing_key
 from .errors import GatewayError
 from .gateway import authenticate, enforce_rate_limit, json_response, read_json_body, run_request
 from .models import Charge
@@ -50,11 +51,13 @@ def charge_json(charge: Charge) -> dict[str, Any]:
         "id": str(charge.id),
         "object": "transaction",
         "reference": charge.reference,
+        "domain": charge.domain or DEFAULT_DOMAIN,
         "type": charge.type,
         "amount": None if charge.amount is None else plain(charge.amount),
         "currency": charge.currency,
         "country": charge.country,
         "description": charge.description,
+        "attributes": orjson.loads(charge.attributes_json) if charge.attributes_json else {},
         "metadata": orjson.loads(charge.metadata_json) if charge.metadata_json else {},
         "fee": {
             "amount_usd": _money(charge.fee_charged),
@@ -65,16 +68,30 @@ def charge_json(charge: Charge) -> dict[str, Any]:
     }
 
 
-def _parse(body: dict[str, Any]) -> dict[str, Any]:
+def _parse(body: dict[str, Any], key_domain: str | None) -> dict[str, Any]:
     def bad(message: str):
         raise GatewayError(400, "invalid_request", message)
+
+    domain_name = body.get("domain", key_domain or DEFAULT_DOMAIN)
+    if not isinstance(domain_name, str) or domain_name not in DOMAINS:
+        bad(f"'domain' must be one of: {', '.join(sorted(DOMAINS))}")
+    if key_domain and domain_name != key_domain:
+        raise GatewayError(403, "key_domain_mismatch", f"this API key is restricted to the '{key_domain}' domain")
+    domain = DOMAINS[domain_name]
 
     reference = body.get("reference")
     if not isinstance(reference, str) or not REFERENCE_RE.match(reference):
         bad("'reference' is required: your own ID for this transaction (up to 200 letters, digits and . _ : / @ # -)")
-    tx_type = body.get("type", "transaction")
+    tx_type = body.get("type", "transaction" if domain.types is None else None)
     if not isinstance(tx_type, str) or not TYPE_RE.match(tx_type):
-        bad("'type' must be a short label such as payment, order, transfer (letters, digits and . _ -)")
+        if domain.types is None:
+            bad("'type' must be a short label such as payment, order, transfer (letters, digits and . _ -)")
+        bad(f"'type' is required for {domain.name}: one of {', '.join(sorted(domain.types))}")
+    try:
+        attributes = domain.validate(tx_type, body.get("attributes"))
+    except DomainError as exc:
+        bad(str(exc))
+    attributes_json = orjson.dumps(attributes, option=orjson.OPT_SORT_KEYS).decode() if attributes else None
 
     amount = body.get("amount")
     if amount is not None:
@@ -114,14 +131,21 @@ def _parse(body: dict[str, Any]) -> dict[str, Any]:
         metadata_json = orjson.dumps(metadata, option=orjson.OPT_SORT_KEYS).decode()
 
     return {
-        "reference": reference, "type": tx_type, "amount": amount, "currency": currency, "country": country,
-        "description": description, "metadata_json": metadata_json,
+        "reference": reference, "domain": domain.name, "type": tx_type, "amount": amount, "currency": currency,
+        "country": country, "description": description, "metadata_json": metadata_json,
+        "attributes_json": attributes_json,
     }
 
 
 def _same_transaction(charge: Charge, fields: dict[str, Any]) -> bool:
     stored_amount = None if charge.amount is None else Decimal(charge.amount).quantize(Decimal("0.000001"))
-    return charge.type == fields["type"] and stored_amount == fields["amount"] and charge.currency == fields["currency"]
+    return (
+        (charge.domain or DEFAULT_DOMAIN) == fields["domain"]
+        and charge.type == fields["type"]
+        and stored_amount == fields["amount"]
+        and charge.currency == fields["currency"]
+        and (charge.attributes_json or None) == fields["attributes_json"]
+    )
 
 
 @router.post("/v1/transactions")
@@ -129,7 +153,7 @@ async def record_transaction(request: Request) -> Response:
     async def work(services: Services, request_id: str) -> Response:
         caller = await authenticate(services, request)
         enforce_rate_limit(services, caller)
-        fields = _parse(await read_json_body(services, request))
+        fields = _parse(await read_json_body(services, request), caller.key_domain)
         fee_country = caller.country
         if services.settings.price_by_transaction_country and fields["country"]:
             fee_country = fields["country"]
@@ -174,12 +198,40 @@ async def list_transactions(request: Request) -> Response:
         reference = params.get("reference")
         if reference:
             stmt = stmt.where(Charge.reference == reference)
+        domain = params.get("domain")
+        if domain:
+            if domain not in DOMAINS:
+                raise GatewayError(400, "invalid_request", f"unknown domain '{domain}'")
+            stmt = stmt.where(Charge.domain == domain) if domain != DEFAULT_DOMAIN else stmt.where(
+                (Charge.domain == domain) | (Charge.domain.is_(None))
+            )
+        if caller.key_domain:
+            stmt = stmt.where(Charge.domain == caller.key_domain)
         try:
             async with services.db.session() as session:
                 rows = (await session.execute(stmt)).scalars().all()
         except DB_UNAVAILABLE_ERRORS:
             raise GatewayError(503, "database_unavailable", "service temporarily unavailable", write_audit_row=False) from None
         return json_response({"object": "list", "data": [charge_json(c) for c in rows]}, headers={"X-Request-Id": request_id})
+
+    return await run_request(request, work)
+
+
+@router.get("/v1/domains")
+async def list_domains(request: Request) -> Response:
+    """The transaction domains, their types and attributes, and this account's fee in each."""
+
+    async def work(services: Services, request_id: str) -> Response:
+        caller = await authenticate(services, request)
+        enforce_rate_limit(services, caller)
+        multiplier = await services.billing.country_multiplier(caller.country)
+        data = []
+        for name, domain in DOMAINS.items():
+            if caller.key_domain and name != caller.key_domain:
+                continue
+            base = await services.billing.price_for(pricing_key(name), None)
+            data.append({**domain.describe(), "fee_usd": _money(base.scaled(multiplier).fee_for(None))})
+        return json_response({"object": "list", "data": data}, headers={"X-Request-Id": request_id})
 
     return await run_request(request, work)
 

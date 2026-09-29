@@ -138,6 +138,34 @@ def main() -> int:
         r = c.get("/v1/transactions", params={"reference": ref}, headers=auth)
         check("transactions can be listed", r.status_code == 200 and len(r.json().get("data", [])) == 1)
 
+        # --- domains: brokerage, crypto, and keys locked to one domain ----------
+        trade = {"reference": ref + "-trade", "domain": "brokerage", "type": "buy", "amount": "2275.20",
+                 "currency": "USD", "attributes": {"symbol": "aapl", "quantity": "10", "price": "227.52"}}
+        r = c.post("/v1/transactions", json=trade, headers=auth)
+        ok = r.status_code == 201 and r.json().get("attributes", {}).get("symbol") == "AAPL"
+        check("brokerage trade recorded (Robinhood-style)", ok, r.text[:120] if not ok else "")
+        spent += Decimal("0.03") if ok else 0
+        onramp = {"reference": ref + "-onramp", "domain": "crypto", "type": "onramp", "amount": "100",
+                  "currency": "USD", "attributes": {"asset": "btc", "quantity": "0.0015", "network": "bitcoin"}}
+        r = c.post("/v1/transactions", json=onramp, headers=auth)
+        ok = r.status_code == 201 and r.json().get("attributes", {}).get("asset") == "BTC"
+        check("crypto on-ramp recorded (MoonPay-style)", ok, r.text[:120] if not ok else "")
+        spent += Decimal("0.03") if ok else 0
+        bad = {**trade, "reference": ref + "-bad", "attributes": {"quantity": "10"}}
+        r = c.post("/v1/transactions", json=bad, headers=auth)
+        check("incomplete trade is refused and not charged", r.status_code == 400, f"HTTP {r.status_code}")
+        r = c.post(f"/admin/api/users/{user['id']}/keys", json={"domain": "crypto", "name": "smoke-crypto"}, headers=admin)
+        crypto_key = r.json()
+        created_keys.append(crypto_key["id"])
+        crypto_auth = {"Authorization": f"Bearer {crypto_key['api_key']}"}
+        r1 = c.post("/v1/transactions", json={**trade, "reference": ref + "-x"}, headers=crypto_auth)
+        r2 = c.get("/v1/providers", headers=crypto_auth)
+        check("crypto-only key is kept out of other domains and the AI gateway",
+              r1.status_code == 403 and r2.status_code == 403, f"HTTP {r1.status_code}/{r2.status_code}")
+        r = c.get("/v1/domains", headers=auth)
+        check("domains listed", r.status_code == 200 and len(r.json().get("data", [])) >= 8,
+              f"{len(r.json().get('data', []))} domains" if r.status_code == 200 else f"HTTP {r.status_code}")
+
         # These checks need a provider that is switched on; none of them reaches it.
         probe = args.model[0] if args.model else (f"{configured[0]}/smoke-test-model" if configured else "openai/x")
         chat = {"model": probe, "messages": [{"role": "user", "content": "hi"}]}

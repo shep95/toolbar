@@ -95,7 +95,7 @@ async def _lookup_key(services: Services, key_hash: str):
     stmt = (
         select(
             ApiKey.id, ApiKey.user_id, ApiKey.status, ApiKey.provider, ApiKey.rate_limit_per_minute,
-            ApiKey.key_prefix, User.status, User.country,
+            ApiKey.key_prefix, User.status, User.country, ApiKey.domain,
         )
         .join(User, User.id == ApiKey.user_id)
         .where(ApiKey.key_hash == key_hash)
@@ -133,7 +133,7 @@ async def authenticate(services: Services, request: Request) -> Caller:
         caller = Caller(
             api_key_id=cached.api_key_id, user_id=cached.user_id, key_prefix=cached.key_prefix,
             key_provider=cached.key_provider, rate_limit_per_minute=cached.rate_limit_per_minute or default_limit,
-            country=cached.country,
+            country=cached.country, key_domain=cached.domain,
         )
         request.state.caller = caller
         return caller
@@ -146,18 +146,28 @@ async def authenticate(services: Services, request: Request) -> Caller:
 
     if row is None:
         raise GatewayError(401, "invalid_key", "invalid API key", detail=f"unknown key {display_prefix(raw_key)}")
-    key_id, user_id, key_status, key_provider, key_limit, key_prefix, user_status, user_country = row
+    key_id, user_id, key_status, key_provider, key_limit, key_prefix, user_status, user_country, key_domain = row
     caller = Caller(
         api_key_id=key_id, user_id=user_id, key_prefix=key_prefix, key_provider=key_provider,
-        rate_limit_per_minute=key_limit or default_limit, country=user_country,
+        rate_limit_per_minute=key_limit or default_limit, country=user_country, key_domain=key_domain,
     )
     request.state.caller = caller
     if key_status != KeyStatus.ACTIVE:
         raise GatewayError(401, "key_revoked", "this API key has been revoked")
     if user_status != UserStatus.ACTIVE:
         raise GatewayError(403, "user_suspended", "account is suspended")
-    services.auth_cache.put(key_hash, CachedKey(key_id, user_id, key_prefix, key_provider, key_limit, user_country))
+    services.auth_cache.put(
+        key_hash, CachedKey(key_id, user_id, key_prefix, key_provider, key_limit, user_country, key_domain)
+    )
     return caller
+
+
+def enforce_ai_domain(caller: Caller) -> None:
+    """Keys locked to another domain (crypto, brokerage...) cannot use the AI gateway."""
+    if caller.key_domain not in (None, "ai"):
+        raise GatewayError(
+            403, "key_domain_mismatch", f"this API key is restricted to the '{caller.key_domain}' domain"
+        )
 
 
 def enforce_rate_limit(services: Services, caller: Caller) -> None:
@@ -273,6 +283,7 @@ async def unified_chat_completions(request: Request) -> Response:
 
     async def work(services: Services, request_id: str) -> Response:
         caller = await authenticate(services, request)
+        enforce_ai_domain(caller)
         enforce_rate_limit(services, caller)
         body = await read_json_body(services, request)
         provider, model = resolve_unified_model(body.get("model"), caller.key_provider, services.connectors)
@@ -341,6 +352,7 @@ async def list_models(request: Request) -> Response:
 
     async def work(services: Services, request_id: str) -> Response:
         caller = await authenticate(services, request)
+        enforce_ai_domain(caller)
         enforce_rate_limit(services, caller)
         connectors = [c for c in _allowed_connectors(services, caller) if c.lists_models]
         results = await asyncio.gather(*(_fetch_models(services, c) for c in connectors))
@@ -359,6 +371,7 @@ async def list_providers(request: Request) -> Response:
 
     async def work(services: Services, request_id: str) -> Response:
         caller = await authenticate(services, request)
+        enforce_ai_domain(caller)
         enforce_rate_limit(services, caller)
         data = [
             {k: v for k, v in c.describe().items() if k not in ("base_url", "configured")}
@@ -377,6 +390,7 @@ async def native_models(provider: str, request: Request) -> Response:
         if provider not in services.connectors:
             raise GatewayError(404, "unknown_provider", f"unknown provider '{provider}'", write_audit_row=False)
         caller = await authenticate(services, request)
+        enforce_ai_domain(caller)
         enforce_rate_limit(services, caller)
         connector = select_connector(provider, caller.key_provider, services.connectors)
         result = await _fetch_models(services, connector) if connector.lists_models else None
@@ -395,6 +409,7 @@ async def native_passthrough(provider: str, path: str, request: Request) -> Resp
         if provider not in services.connectors:
             raise GatewayError(404, "unknown_provider", f"unknown provider '{provider}'", write_audit_row=False)
         caller = await authenticate(services, request)
+        enforce_ai_domain(caller)
         enforce_rate_limit(services, caller)
         connector = select_connector(provider, caller.key_provider, services.connectors)
         body = await read_json_body(services, request)

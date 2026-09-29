@@ -49,6 +49,8 @@ class Caller:
     key_provider: str
     rate_limit_per_minute: int
     country: str | None = None
+    # Domain this key is locked to, or None for any domain.
+    key_domain: str | None = None
 
 
 class _Progress:

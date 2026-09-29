@@ -35,6 +35,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from .connectors import Usage
 from .db import Database
 from .countries import default_multiplier
+from .domains import pricing_key
 from .models import (
     ApiKey,
     Charge,
@@ -142,11 +143,11 @@ _PG_CHARGE = text(
         RETURNING balance
     ), c AS (
         INSERT INTO charges
-            (id, user_id, api_key_id, reference, type, amount, currency, country, description, metadata_json,
-             fee_charged, fee_country, fee_multiplier, timestamp, request_id)
+            (id, user_id, api_key_id, reference, domain, type, amount, currency, country, description, metadata_json,
+             attributes_json, fee_charged, fee_country, fee_multiplier, timestamp, request_id)
         SELECT CAST(:cid AS uuid), CAST(:uid AS uuid), CAST(:kid AS uuid), CAST(:ref AS varchar),
-               CAST(:type AS varchar), CAST(:amount AS numeric), CAST(:currency AS varchar),
-               CAST(:country AS varchar), CAST(:description AS varchar), CAST(:meta AS text),
+               CAST(:domain AS varchar), CAST(:type AS varchar), CAST(:amount AS numeric), CAST(:currency AS varchar),
+               CAST(:country AS varchar), CAST(:description AS varchar), CAST(:meta AS text), CAST(:attrs AS text),
                CAST(:fee AS numeric), CAST(:fcountry AS varchar), CAST(:fmult AS numeric), now(),
                CAST(:rid AS varchar)
         FROM u
@@ -361,12 +362,14 @@ class BillingEngine:
         user_id: uuid.UUID,
         api_key_id: uuid.UUID,
         reference: str,
+        domain: str,
         type: str,
         amount: Decimal | None,
         currency: str | None,
         country: str | None,
         description: str | None,
         metadata_json: str | None,
+        attributes_json: str | None,
         fee_country: str | None,
         request_id: str,
     ) -> ChargeResult:
@@ -380,12 +383,12 @@ class BillingEngine:
             return ChargeResult(existing, None, replay=True)
 
         multiplier = await self.country_multiplier(fee_country)
-        fee = (await self.price_for("transactions", type)).scaled(multiplier).fee_for(None)
+        fee = (await self.price_for(pricing_key(domain), type)).scaled(multiplier).fee_for(None)
         charge = Charge(
-            id=uuid.uuid4(), user_id=user_id, api_key_id=api_key_id, reference=reference, type=type,
+            id=uuid.uuid4(), user_id=user_id, api_key_id=api_key_id, reference=reference, domain=domain, type=type,
             amount=amount, currency=currency, country=country, description=description,
-            metadata_json=metadata_json, fee_charged=fee, fee_country=fee_country, fee_multiplier=multiplier,
-            request_id=request_id,
+            metadata_json=metadata_json, attributes_json=attributes_json, fee_charged=fee,
+            fee_country=fee_country, fee_multiplier=multiplier, request_id=request_id,
         )
         try:
             if self.fast:
@@ -393,8 +396,9 @@ class BillingEngine:
                     _PG_CHARGE,
                     {
                         "fee": fee, "uid": user_id, "kid": api_key_id, "ref": reference, "cid": charge.id,
-                        "type": type, "amount": amount, "currency": currency, "country": country,
-                        "description": description, "meta": metadata_json, "fcountry": fee_country,
+                        "domain": domain, "type": type, "amount": amount, "currency": currency, "country": country,
+                        "description": description, "meta": metadata_json, "attrs": attributes_json,
+                        "fcountry": fee_country,
                         "fmult": multiplier, "rid": request_id,
                     },
                 )
