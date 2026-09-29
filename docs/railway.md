@@ -47,6 +47,7 @@ limits and HTTPS enforcement. `.env.example` lists every option.
 Optional but recommended:
 
 - `ADMIN_ALLOWED_IPS=<your office or home IP>`. Everyone else then gets 404 from `/admin`.
+- `ADMIN_ALLOWED_HOSTS=admin.yourdomain.com` if you add a custom domain. By default the dashboard answers only on the Railway domain in `RAILWAY_PUBLIC_DOMAIN`, and any other hostname gets 404.
 - `MAX_OUTPUT_TOKENS=8192`, or whatever suits your models. This caps what one $0.03 request can cost you.
 
 ## 4. Give it a public URL

@@ -98,7 +98,7 @@ The fee is the base price times the country's multiplier:
 
 - **Who decides the country.** It is set per account by an admin, never by the user, so nobody can claim a cheaper country. An account with no country pays the full fee, and so does any unlisted country.
 - **The same rule for AI requests.** They are adjusted the same way, and responses carry `X-Fee-Country`.
-- **Overrides.** Admins can override any country in the dashboard's **Fees by country** panel, for example when the World Bank reclassifies a country each July. The table lives in `aiproxy/countries.py`.
+- **Overrides.** Admins can override any country in the dashboard's **countries** room, for example when the World Bank reclassifies a country each July. The table lives in `aiproxy/countries.py`.
 - **Pricing by transaction country.** Set `PRICE_BY_TRANSACTION_COUNTRY=true` to price each transaction by the `country` it reports instead. Only do this for accounts you trust, since the caller chooses that country.
 - **Local-currency payments.** Balances and fees are kept in US dollars. Customers can still pay top-ups in their own currency: switch on **Adaptive Pricing** in the Stripe dashboard under Settings → Payments. Stripe then shows the local price and still settles in USD, and the ledger notes what the customer actually paid.
 
@@ -274,8 +274,11 @@ Each attack pattern and its defence. Every row has a test in `tests/test_securit
 | Oversized or malicious input | Body size limit, 30 s body-read timeout against slow senders, a JSON nesting limit, and strict model-ID characters. |
 | Leaking the operator's identity | Provider error bodies and stream error events are scrubbed of org IDs, project IDs and key fragments. Provider response headers are never forwarded. |
 | Oversized provider responses | Capped at `MAX_UPSTREAM_RESPONSE_BYTES`. SSE events are capped at 8 MB. |
-| Guessing the admin token | Separate 32+ character token, compared in constant time. The IP is locked out after 10 failures a minute. Optional `ADMIN_ALLOWED_IPS` makes `/admin` return 404 to everyone else. |
-| Cross-site scripting in the dashboard | All content is rendered as text. A strict CSP allows only the page's own script, pinned by hash. |
+| Guessing the admin token | Separate 32+ character token, compared in constant time. The IP is locked out after 10 failures a minute, and failed dashboard sign-ins are written to the audit log. Optional `ADMIN_ALLOWED_IPS` makes `/admin` return 404 to everyone else. |
+| Stealing the dashboard session | The token is exchanged for a random session ID held only in a `__Host-` cookie (Secure, HttpOnly, SameSite=Strict). Page scripts and the browser console cannot read it. Only its SHA-256 is stored. A session ends after 30 minutes idle or 12 hours, when the User-Agent changes, or on sign-out. |
+| Cross-site requests to the dashboard | Sign-in and every cookie-authenticated change need the dashboard's own `Origin` (or `Sec-Fetch-Site: same-origin`) and an `X-Admin-Request` header. |
+| Reaching the dashboard through another domain | `/admin` answers only on `ADMIN_ALLOWED_HOSTS`, which defaults to Railway's `RAILWAY_PUBLIC_DOMAIN`. Raw IPs, stray domains and DNS rebinding get 404. |
+| Cross-site scripting in the dashboard | All content is rendered as text. The CSP pins the page's one script and one stylesheet by hash, and Trusted Types (`trusted-types 'none'`) forbids turning strings into markup. COOP, COEP and CORP isolate the page, and Permissions-Policy turns off camera, microphone, payment and similar APIs. |
 | Clickjacking, sniffing, caching | `X-Frame-Options: DENY`, `frame-ancestors 'none'`, `nosniff`, `Referrer-Policy: no-referrer`, and `Cache-Control: no-store` on API responses. |
 | Downgrade to plain HTTP | Plain-HTTP requests are rejected, HSTS is sent, and upstream base URLs must be HTTPS. |
 | Reconnaissance | No server banner. The OpenAPI docs are off unless `ENABLE_DOCS=true`. |
@@ -332,10 +335,15 @@ Money is `NUMERIC(18,6)` dollars, never floats.
 
 ## Admin
 
-Every admin route needs `Authorization: Bearer $ADMIN_API_TOKEN`. Open `/admin`
-for the dashboard: overview, revenue per day, users, keys, pricing,
-transactions and rejected requests. Its provider menus list all 40+ providers
-and show which ones have credentials.
+Scripts call the admin API with `Authorization: Bearer $ADMIN_API_TOKEN`.
+
+The dashboard at `/admin` is split into rooms: overview, accounts, domains,
+pricing, countries, ledger and security. Type the token once to unlock it.
+The token is exchanged for a server-side session held in an HttpOnly cookie,
+so it is never kept in the page. The page locks itself after 30 minutes
+without activity. The **security** room lists signed-in browsers and can
+sign them all out. New API keys are shown once and hidden again after 90
+seconds.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -349,6 +357,9 @@ and show which ones have credentials.
 | GET / PUT / DELETE | `/admin/api/pricing` | Fee rules per provider and model |
 | GET | `/admin/api/transactions`, `/admin/api/usage`, `/admin/api/audit` | Usage and audit views |
 | POST | `/admin/api/maintenance/reconcile` | Refund stale pending transactions now |
+| GET / POST / DELETE | `/admin/session` | Dashboard session status, sign-in with `{"token": ...}`, sign-out |
+| GET | `/admin/api/sessions` | Signed-in dashboard browsers |
+| POST | `/admin/api/sessions/end-all` | Sign every dashboard out |
 
 ## Configuration
 
@@ -360,6 +371,8 @@ The main ones:
 | `DATABASE_URL` | — | `postgres://` URLs from Railway or Render work as-is |
 | `ADMIN_API_TOKEN` | unset | At least 32 characters |
 | `ADMIN_ALLOWED_IPS` | unset | IPs or CIDRs allowed to reach `/admin` |
+| `ADMIN_ALLOWED_HOSTS` | `RAILWAY_PUBLIC_DOMAIN` | Hostnames `/admin` answers on; set it when you add a custom domain |
+| `ADMIN_SESSION_IDLE_MINUTES` / `ADMIN_SESSION_MAX_HOURS` | `30` / `12` | Dashboard session lifetime |
 | `<NAME>_API_KEY`, `<NAME>_BASE_URL` | unset / catalog | One pair per provider |
 | `CUSTOM_PROVIDERS` | unset | JSON list of extra OpenAI-compatible providers |
 | `DEFAULT_FEE_PER_REQUEST` | `0.03` | Per completed round trip |

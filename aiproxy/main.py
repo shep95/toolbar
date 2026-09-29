@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import admin, gateway, payments, transactions_api
+from . import admin, admin_session, gateway, payments, transactions_api
 from .billing import BillingEngine
 from .config import Settings, get_settings
 from .connectors import build_connectors
@@ -86,7 +86,8 @@ class HttpsOnlyMiddleware:
 
 
 async def _maintenance_forever(services: Services) -> None:
-    """Flush batched key-usage timestamps and refund abandoned transactions."""
+    """Flush batched key-usage timestamps, refund abandoned transactions and
+    drop expired dashboard sessions."""
     tick = 10
     reconcile_every = max(1, services.settings.reconcile_interval_seconds // tick)
     timeout = timedelta(minutes=services.settings.pending_timeout_minutes)
@@ -98,6 +99,7 @@ async def _maintenance_forever(services: Services) -> None:
             await services.key_usage.flush(services.db)
             if ticks % reconcile_every == 0:
                 await services.billing.reconcile_stale(timeout)
+                await admin_session.purge_expired(services)
         except DB_UNAVAILABLE_ERRORS:
             log.warning("maintenance skipped: database unavailable")
         except Exception:  # keep the loop alive no matter what
@@ -227,6 +229,7 @@ def create_app(
     app.include_router(transactions_api.router)
     app.include_router(gateway.router)
     app.include_router(payments.router)
+    app.include_router(admin_session.router)
     app.include_router(admin.api)
     app.include_router(admin.pages)
     return app

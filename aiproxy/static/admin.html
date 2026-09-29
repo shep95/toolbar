@@ -3,425 +3,1113 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex">
-<link rel="icon" href="data:,">
-<title>Fee Platform Admin</title>
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#07080f">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2307080f'/%3E%3Cpath d='M4 25 L13 10 L17 16 L20 12 L28 25 Z' fill='%23f2a07b'/%3E%3C/svg%3E">
+<title>toolbar · admin</title>
 <style>
   :root {
-    --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #5f6b7a; --border: #dde1e6;
-    --accent: #2f6fed; --accent-text: #ffffff; --danger: #c93838; --ok: #1f8a4c; --warn: #b7791f;
-    --code-bg: #eef1f5;
+    color-scheme: dark;
+    /* layered blacks, each a different temperature */
+    --night: #07080f;
+    --dusk: rgba(12, 14, 30, 0.78);
+    --dusk-solid: #0e1024;
+    --raised: #151832;
+    --line: rgba(190, 184, 230, 0.12);
+    --line-strong: rgba(190, 184, 230, 0.24);
+    --snow: #ece7f3;
+    --haze: #aaa6c7;
+    --mist: #8e8bad;
+    /* the one accent: alpenglow, only where something can be trusted */
+    --glow: #f2a07b;
+    --glow-soft: rgba(242, 160, 123, 0.42);
+    --glow-wash: rgba(242, 160, 123, 0.07);
+    --ember: #de8aa2;
+    --ember-soft: rgba(222, 138, 162, 0.42);
+    --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #111418; --panel: #1a1e24; --text: #e6e9ee; --muted: #9aa5b3; --border: #2c323b;
-      --accent: #5b8ff9; --accent-text: #0b0d10; --danger: #f07171; --ok: #4cc38a; --warn: #e0a84a;
-      --code-bg: #232932;
-    }
+  *, *::before, *::after { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html { background: var(--night); }
+  body {
+    margin: 0; min-height: 100vh; background: var(--night); color: var(--snow);
+    font: 400 14px/1.6 var(--font); letter-spacing: 0.01em;
+    -webkit-font-smoothing: antialiased; overflow-x: hidden;
   }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
-  header h1 { font-size: 16px; margin: 0; }
-  main { max-width: 1200px; margin: 0 auto; padding: 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
-  #app { min-width: 0; }
-  section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; min-width: 0; }
-  section h2 { font-size: 14px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
-  .card { border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
-  .card .v { font-size: 20px; font-weight: 600; }
-  .card .l { color: var(--muted); font-size: 12px; }
-  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
-  .scroll { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-  th { color: var(--muted); font-weight: 500; }
-  tr.sel td { background: var(--code-bg); }
-  input, select, button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; }
-  button { cursor: pointer; }
-  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
-  button.danger { color: var(--danger); }
-  form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
-  form input { min-width: 0; flex: 1 1 120px; }
-  .pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 12px; border: 1px solid currentColor; }
-  .s-active, .s-success { color: var(--ok); } .s-suspended, .s-revoked, .s-failed, .s-error { color: var(--danger); } .s-pending { color: var(--warn); }
-  .secret { background: var(--code-bg); border: 1px dashed var(--warn); padding: 10px; border-radius: 6px; word-break: break-all; font-family: ui-monospace, monospace; }
-  .muted { color: var(--muted); }
-  .bars { display: flex; align-items: flex-end; gap: 3px; height: 120px; border-bottom: 1px solid var(--border); }
-  .bars div { flex: 1; background: var(--accent); min-height: 1px; border-radius: 2px 2px 0 0; }
-  #msg { min-height: 1.2em; }
-  #msg.err { color: var(--danger); }
-  .hidden { display: none !important; }
-  @media (max-width: 600px) { .grid2 { grid-template-columns: 1fr; } }
+  ::selection { background: var(--glow-soft); color: var(--snow); }
+
+  .scene { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; display: block; }
+  .veil {
+    position: fixed; inset: 0; z-index: 1; pointer-events: none;
+    background: linear-gradient(180deg, rgba(7, 8, 15, 0.5) 0%, rgba(7, 8, 15, 0.84) 32%, rgba(7, 8, 15, 0.95) 70%, rgba(7, 8, 15, 0.97) 100%);
+    transition: opacity 600ms ease;
+  }
+  body.locked .veil { opacity: 0.25; }
+  .layer { position: relative; z-index: 2; }
+
+  :focus-visible { outline: 2px solid var(--snow); outline-offset: 3px; border-radius: 6px; }
+  a { color: var(--snow); text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+  a:hover { text-decoration-color: var(--snow); }
+
+  /* ------------------------------------------------ lock */
+  .lock { min-height: 100vh; display: grid; place-items: start center; padding: 13vh 16px 40px; }
+  .lock-card {
+    width: min(420px, 100%); padding: 40px 36px 32px; border-radius: 22px;
+    background: rgba(10, 11, 26, 0.58); border: 1px solid rgba(236, 231, 243, 0.09);
+    backdrop-filter: blur(18px) saturate(120%); -webkit-backdrop-filter: blur(18px) saturate(120%);
+    box-shadow: 0 30px 80px rgba(3, 3, 10, 0.55);
+  }
+  .wordmark { margin: 0; font-weight: 200; font-size: 34px; letter-spacing: 0.04em; line-height: 1.1; }
+  .wordmark span { color: var(--mist); font-size: 0.5em; letter-spacing: 0.24em; margin-left: 10px; vertical-align: middle; }
+  .lock-card .lede { color: var(--haze); margin: 10px 0 30px; }
+  .lock-card .fine { color: var(--mist); font-size: 12px; margin: 22px 0 0; line-height: 1.55; }
+  .lock-msg { min-height: 1.6em; margin: 14px 0 0; color: var(--haze); font-size: 13px; }
+  .lock-msg.alarm { color: var(--ember); }
+
+  /* ------------------------------------------------ shell */
+  .topbar {
+    position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 18px 32px; background: rgba(7, 8, 15, 0.6); border-bottom: 1px solid var(--line);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  }
+  .topbar .wordmark { font-size: 22px; }
+  .topbar .spacer { flex: 1 1 auto; }
+  .beacon { display: inline-flex; align-items: center; gap: 10px; color: var(--haze); font-size: 12px; letter-spacing: 0.06em; }
+  .beacon i { width: 7px; height: 7px; border-radius: 50%; background: var(--glow); box-shadow: 0 0 0 4px rgba(242, 160, 123, 0.14), 0 0 14px rgba(242, 160, 123, 0.7); }
+  .shell { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 56px; max-width: 1320px; margin: 0 auto; padding: 48px 32px 120px; }
+  .rooms { position: sticky; top: 104px; align-self: start; display: flex; flex-direction: column; gap: 2px; }
+  .rooms button {
+    all: unset; cursor: pointer; display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 10px;
+    color: var(--mist); font-weight: 300; font-size: 15px; letter-spacing: 0.04em; transition: color 160ms ease, background 160ms ease;
+  }
+  .rooms button::before { content: ""; width: 14px; height: 1px; background: currentColor; opacity: 0.5; transition: width 200ms ease; }
+  .rooms button:hover { color: var(--snow); }
+  .rooms button[aria-current="page"] { color: var(--snow); background: rgba(236, 231, 243, 0.04); }
+  .rooms button[aria-current="page"]::before { width: 24px; opacity: 1; }
+  .rooms button:focus-visible { outline: 2px solid var(--snow); outline-offset: 0; }
+
+  .room { min-width: 0; animation: arrive 420ms cubic-bezier(0.2, 0.7, 0.2, 1); }
+  @keyframes arrive { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  .room > header { margin-bottom: 36px; max-width: 720px; }
+  .room h2 { margin: 0; font-weight: 200; font-size: 40px; letter-spacing: 0.01em; line-height: 1.1; }
+  .room h2:focus { outline: none; }
+  .room .lede { margin: 12px 0 0; color: var(--haze); font-size: 15px; font-weight: 300; }
+  .stack { display: grid; gap: 28px; min-width: 0; }
+  .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; align-items: start; }
+  .split.lean { grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); }
+
+  .panel { background: var(--dusk); border: 1px solid var(--line); border-radius: 18px; padding: 26px; min-width: 0; }
+  .panel h3 { margin: 0 0 4px; font-weight: 300; font-size: 17px; letter-spacing: 0.02em; }
+  .panel .note { margin: 0 0 18px; color: var(--mist); font-size: 13px; }
+  .panel .note:last-child { margin-bottom: 0; }
+  .muted { color: var(--haze); }
+  .faint { color: var(--mist); }
+
+  /* ------------------------------------------------ numbers */
+  .hero { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 40px; }
+  .hero .big { font-weight: 200; font-size: clamp(44px, 7vw, 72px); line-height: 1; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+  .hero .cap { color: var(--mist); font-size: 12px; letter-spacing: 0.14em; margin-top: 10px; }
+  /* hairlines between tiles; the edges of the last row and column fall outside and are clipped */
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); background: var(--dusk-solid); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; }
+  .metric { padding: 20px 22px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 0 -1px -1px 0; }
+  .metric .v { font-weight: 200; font-size: 28px; font-variant-numeric: tabular-nums; line-height: 1.2; }
+  .metric .l { color: var(--mist); font-size: 12px; letter-spacing: 0.08em; margin-top: 4px; }
+  .chart { width: 100%; height: 170px; display: block; margin-top: 18px; }
+  .chart .hit { fill: transparent; }
+  .chart .hit:hover { fill: rgba(236, 231, 243, 0.05); }
+  .axis { display: flex; justify-content: space-between; color: var(--mist); font-size: 12px; margin-top: 8px; font-variant-numeric: tabular-nums; }
+
+  /* ------------------------------------------------ tags */
+  .tag { display: inline-block; padding: 1px 10px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--haze); font-size: 12px; letter-spacing: 0.04em; text-transform: lowercase; white-space: nowrap; }
+  .tag.trust { color: var(--glow); border-color: var(--glow-soft); }
+  .tag.alarm { color: var(--ember); border-color: var(--ember-soft); }
+
+  /* ------------------------------------------------ forms */
+  form { margin: 0; }
+  .fields { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin: 0 0 18px; }
+  .field { display: grid; gap: 6px; flex: 1 1 150px; min-width: 0; }
+  .field > span { color: var(--mist); font-size: 12px; letter-spacing: 0.06em; text-transform: lowercase; }
+  .field.wide { flex-basis: 220px; }
+  input, select {
+    width: 100%; min-width: 0; font: 400 14px/1.4 var(--font); color: var(--snow);
+    background: rgba(236, 231, 243, 0.035); border: 1px solid var(--line-strong); border-radius: 11px; padding: 10px 12px;
+    transition: border-color 160ms ease, background 160ms ease;
+  }
+  input::placeholder { color: var(--mist); opacity: 1; }
+  input:hover, select:hover { border-color: rgba(236, 231, 243, 0.34); }
+  input:focus, select:focus { outline: none; border-color: var(--snow); background: rgba(236, 231, 243, 0.06); }
+  input:focus-visible, select:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(236, 231, 243, 0.2); }
+  select option { background: var(--dusk-solid); color: var(--snow); }
+  .btn {
+    font: 400 14px/1 var(--font); letter-spacing: 0.04em; text-transform: lowercase; cursor: pointer; white-space: nowrap;
+    color: var(--snow); background: transparent; border: 1px solid rgba(236, 231, 243, 0.26); border-radius: 999px; padding: 11px 20px;
+    transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+  }
+  .btn:hover { border-color: var(--snow); background: rgba(236, 231, 243, 0.05); }
+  .btn.solid { background: var(--snow); color: #0b0c18; border-color: var(--snow); }
+  .btn.solid:hover { background: #ffffff; }
+  .btn.warn { color: var(--ember); border-color: var(--ember-soft); }
+  .btn.warn:hover { border-color: var(--ember); background: rgba(222, 138, 162, 0.08); }
+  .btn.quiet { border-color: transparent; color: var(--haze); padding-left: 12px; padding-right: 12px; }
+  .btn.quiet:hover { color: var(--snow); border-color: var(--line-strong); }
+  .btn.small { padding: 6px 13px; font-size: 12px; }
+  .btn:disabled { opacity: 0.45; cursor: progress; }
+  .lock-card .btn.solid { width: 100%; margin-top: 16px; padding: 13px 20px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+
+  /* ------------------------------------------------ tables */
+  .scroll { overflow-x: auto; margin: 0 -4px; padding: 0 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-weight: 400; color: var(--mist); font-size: 12px; letter-spacing: 0.06em; padding: 0 12px 10px 0; border-bottom: 1px solid var(--line-strong); white-space: nowrap; }
+  td { padding: 11px 12px 11px 0; border-bottom: 1px solid var(--line); white-space: nowrap; vertical-align: middle; }
+  tbody tr { transition: background 140ms ease; }
+  tbody tr:hover { background: rgba(236, 231, 243, 0.025); }
+  tbody tr.sel { background: rgba(236, 231, 243, 0.05); }
+  td.num { text-align: right; } th.num { text-align: right; }
+  td.wrap { white-space: normal; min-width: 220px; color: var(--haze); }
+  .empty td { color: var(--mist); text-align: left; padding: 22px 0; border-bottom: 0; }
+  .ellipsis { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ------------------------------------------------ account panel */
+  .account-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 20px; margin-bottom: 6px; }
+  .account-head h3 { font-size: 20px; text-transform: none; word-break: break-all; }
+  .account-head .bal { font-weight: 200; font-size: 30px; font-variant-numeric: tabular-nums; }
+  .divider { height: 1px; background: var(--line); margin: 22px 0; border: 0; }
+  .secret { border: 1px solid var(--glow-soft); background: var(--glow-wash); border-radius: 16px; padding: 18px 20px; margin: 0 0 20px; }
+  .secret p { margin: 0 0 10px; color: var(--glow); font-size: 13px; }
+  .secret code { display: block; font: 13px/1.5 var(--mono); color: var(--snow); word-break: break-all; margin-bottom: 14px; user-select: all; }
+  .secret .faint { font-size: 12px; margin-left: 4px; }
+
+  .protections { margin: 0; padding: 0; list-style: none; display: grid; gap: 14px; }
+  .protections li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 12px; color: var(--haze); }
+  .protections li::before { content: ""; width: 7px; height: 7px; margin-top: 8px; border-radius: 50%; background: var(--glow); box-shadow: 0 0 10px rgba(242, 160, 123, 0.6); }
+
+  /* ------------------------------------------------ dialog + toast */
+  dialog {
+    width: min(440px, calc(100vw - 32px)); padding: 30px; border-radius: 20px; color: var(--snow);
+    background: var(--raised); border: 1px solid var(--line-strong); box-shadow: 0 40px 100px rgba(0, 0, 0, 0.6);
+  }
+  dialog::backdrop { background: rgba(4, 4, 10, 0.72); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+  dialog h3 { margin: 0 0 10px; font-weight: 300; font-size: 20px; }
+  dialog p { margin: 0 0 26px; color: var(--haze); }
+  dialog .actions { justify-content: flex-end; }
+  .toast {
+    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 20; max-width: calc(100vw - 32px);
+    padding: 12px 20px; border-radius: 999px; background: var(--raised); border: 1px solid var(--line-strong); color: var(--snow);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5); font-size: 13px;
+  }
+  .toast.alarm { color: var(--ember); border-color: var(--ember-soft); }
+  .toast.trust { color: var(--glow); border-color: var(--glow-soft); }
+
+  /* ------------------------------------------------ small screens */
+  @media (max-width: 960px) {
+    .shell { grid-template-columns: minmax(0, 1fr); gap: 28px; padding: 22px 16px 96px; }
+    .topbar { padding: 14px 16px; gap: 10px; }
+    .topbar .beacon { order: 3; flex-basis: 100%; }
+    .rooms { position: sticky; top: 0; z-index: 4; flex-direction: row; overflow-x: auto; gap: 4px; margin: 0 -16px; padding: 8px 16px;
+             background: rgba(7, 8, 15, 0.8); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); scrollbar-width: none; }
+    .rooms::-webkit-scrollbar { display: none; }
+    .rooms button { flex: 0 0 auto; padding: 8px 12px; font-size: 14px; }
+    .rooms button::before { display: none; }
+    .split { grid-template-columns: minmax(0, 1fr); }
+    .room h2 { font-size: 32px; }
+    .panel { padding: 20px 18px; border-radius: 16px; }
+    .lock-card { padding: 32px 22px 26px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  }
+  @media (forced-colors: active) {
+    .beacon i, .protections li::before { forced-color-adjust: none; }
+  }
 </style>
 </head>
-<body>
-<header>
-  <h1>Transaction Fee Platform · Admin</h1>
-  <form id="login" autocomplete="off">
-    <input id="token" type="password" placeholder="Admin token" aria-label="Admin token" autocomplete="new-password">
-    <button class="primary">Connect</button>
-    <button type="button" id="logout">Sign out</button>
-  </form>
-</header>
-<main>
-  <div id="msg" role="status"></div>
-  <div id="app" class="hidden">
-    <section>
-      <h2>Overview</h2>
-      <div class="cards" id="cards"></div>
-      <p class="muted" id="providers"></p>
-      <p><button type="button" id="stripeTest">Test Stripe checkout</button> <span id="stripeResult" class="muted"></span></p>
-      <h2 style="margin-top:14px">Revenue per day (30 days)</h2>
-      <div class="bars" id="bars"></div>
-    </section>
+<body class="locked">
+<svg class="scene" aria-hidden="true" focusable="false" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMax slice">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0a0b1f"/><stop offset=".35" stop-color="#181a3f"/>
+      <stop offset=".58" stop-color="#352a57"/><stop offset=".7" stop-color="#5a3a60"/><stop offset=".78" stop-color="#1b1631"/>
+    </linearGradient>
+    <linearGradient id="glow" gradientUnits="userSpaceOnUse" x1="0" y1="230" x2="0" y2="640">
+      <stop offset="0" stop-color="#f7b891"/><stop offset=".28" stop-color="#e98e74"/>
+      <stop offset=".62" stop-color="#8a5470"/><stop offset="1" stop-color="#2b2248"/>
+    </linearGradient>
+    <linearGradient id="hills" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#261e44"/><stop offset="1" stop-color="#110e22"/>
+    </linearGradient>
+    <linearGradient id="haze" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a2d58" stop-opacity="0"/><stop offset="1" stop-color="#3a2d58" stop-opacity=".55"/>
+    </linearGradient>
+    <linearGradient id="floor" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#06080b" stop-opacity="0"/><stop offset="1" stop-color="#06080b"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="900" fill="url(#sky)"/>
+  <g><circle cx="334" cy="137" r="1.0" fill="#e9e4ef" opacity="0.34"/><circle cx="1577" cy="149" r="0.7" fill="#e9e4ef" opacity="0.67"/><circle cx="755" cy="25" r="1.0" fill="#e9e4ef" opacity="0.59"/><circle cx="1312" cy="108" r="0.6" fill="#e9e4ef" opacity="0.46"/><circle cx="1380" cy="66" r="1.2" fill="#e9e4ef" opacity="0.29"/><circle cx="518" cy="111" r="1.1" fill="#e9e4ef" opacity="0.56"/><circle cx="603" cy="82" r="0.9" fill="#e9e4ef" opacity="0.45"/><circle cx="895" cy="207" r="0.9" fill="#e9e4ef" opacity="0.62"/><circle cx="802" cy="230" r="0.9" fill="#e9e4ef" opacity="0.30"/><circle cx="576" cy="206" r="1.3" fill="#e9e4ef" opacity="0.31"/><circle cx="998" cy="206" r="0.7" fill="#e9e4ef" opacity="0.66"/><circle cx="814" cy="24" r="0.8" fill="#e9e4ef" opacity="0.69"/><circle cx="842" cy="92" r="1.3" fill="#e9e4ef" opacity="0.50"/><circle cx="1100" cy="136" r="1.0" fill="#e9e4ef" opacity="0.67"/><circle cx="727" cy="125" r="0.7" fill="#e9e4ef" opacity="0.46"/><circle cx="476" cy="218" r="1.4" fill="#e9e4ef" opacity="0.59"/><circle cx="1091" cy="63" r="1.2" fill="#e9e4ef" opacity="0.25"/><circle cx="1071" cy="194" r="1.0" fill="#e9e4ef" opacity="0.33"/><circle cx="876" cy="126" r="0.6" fill="#e9e4ef" opacity="0.26"/><circle cx="537" cy="78" r="0.8" fill="#e9e4ef" opacity="0.32"/><circle cx="1189" cy="41" r="1.0" fill="#e9e4ef" opacity="0.45"/><circle cx="677" cy="212" r="1.2" fill="#e9e4ef" opacity="0.42"/><circle cx="764" cy="100" r="0.9" fill="#e9e4ef" opacity="0.63"/><circle cx="793" cy="152" r="1.0" fill="#e9e4ef" opacity="0.56"/><circle cx="1186" cy="120" r="1.1" fill="#e9e4ef" opacity="0.37"/><circle cx="249" cy="70" r="0.9" fill="#e9e4ef" opacity="0.43"/><circle cx="564" cy="192" r="0.8" fill="#e9e4ef" opacity="0.33"/><circle cx="434" cy="30" r="1.1" fill="#e9e4ef" opacity="0.39"/></g>
+  <path d="M0 640 L0 560 L26 548 L52 539 L70 530 L98 525 L116 531 L140 548 L157 510 L184 487 L210 470 L231 479 L246 491 L270 500 L288 481 L308 443 L330 430 L346 451 L371 455 L390 468 L413 442 L429 423 L455 395 L477 414 L494 404 L515 430 L535 402 L559 370 L580 350 L598 358 L624 362 L640 385 L655 365 L680 315 L700 300 L711 305 L730 326 L745 330 L765 288 L783 268 L800 232 L818 248 L834 280 L850 290 L868 280 L891 275 L905 268 L921 297 L941 302 L960 330 L973 310 L994 305 L1010 305 L1036 318 L1056 350 L1075 372 L1097 356 L1109 355 L1130 340 L1154 369 L1170 385 L1195 410 L1214 405 L1232 378 L1250 382 L1275 399 L1295 426 L1320 445 L1346 433 L1366 428 L1385 415 L1406 436 L1426 460 L1450 470 L1468 455 L1492 464 L1520 450 L1542 458 L1570 474 L1600 505 L1600 640 Z" fill="url(#glow)"/>
+  <path d="M70 530 L98 525 L116 531 L140 548 L140 640 L108 640 L84 580 Z M210 470 L231 479 L246 491 L270 500 L270 640 L243 640 L222 546 Z M330 430 L346 451 L371 455 L390 468 L390 640 L363 640 L342 524 Z M455 395 L477 414 L494 404 L515 430 L515 640 L488 640 L467 505 Z M580 350 L598 358 L624 362 L640 385 L640 640 L613 640 L592 480 Z M700 300 L711 305 L730 326 L745 330 L745 640 L725 640 L709 453 Z M800 232 L818 248 L834 280 L850 290 L850 640 L828 640 L810 416 Z M905 268 L921 297 L941 302 L960 330 L960 640 L935 640 L916 435 Z M1010 305 L1036 318 L1056 350 L1075 372 L1075 640 L1046 640 L1023 456 Z M1130 340 L1154 369 L1170 385 L1195 410 L1195 640 L1166 640 L1143 475 Z M1250 382 L1275 399 L1295 426 L1320 445 L1320 640 L1288 640 L1264 498 Z M1385 415 L1406 436 L1426 460 L1450 470 L1450 640 L1421 640 L1398 516 Z M1520 450 L1542 458 L1570 474 L1600 505 L1600 640 L1564 640 L1536 536 Z" fill="#1f1838" opacity=".62"/>
+  <path d="M0 560 L26 548 L52 539 L70 530 L98 525 L116 531 L140 548 L157 510 L184 487 L210 470 L231 479 L246 491 L270 500 L288 481 L308 443 L330 430 L346 451 L371 455 L390 468 L413 442 L429 423 L455 395 L477 414 L494 404 L515 430 L535 402 L559 370 L580 350 L598 358 L624 362 L640 385 L655 365 L680 315 L700 300 L711 305 L730 326 L745 330 L765 288 L783 268 L800 232 L818 248 L834 280 L850 290 L868 280 L891 275 L905 268 L921 297 L941 302 L960 330 L973 310 L994 305 L1010 305 L1036 318 L1056 350 L1075 372 L1097 356 L1109 355 L1130 340 L1154 369 L1170 385 L1195 410 L1214 405 L1232 378 L1250 382 L1275 399 L1295 426 L1320 445 L1346 433 L1366 428 L1385 415 L1406 436 L1426 460 L1450 470 L1468 455 L1492 464 L1520 450 L1542 458 L1570 474 L1600 505" fill="none" stroke="#ffe1cc" stroke-opacity=".38" stroke-width="1.2"/>
+  <rect y="520" width="1600" height="140" fill="url(#haze)"/>
+  <path d="M0 700 L0 610 L63 585 L120 560 L171 571 L210 590 L277 557 L330 520 L378 550 L430 575 L489 555 L560 540 L609 571 L660 585 L717 560 L790 530 L845 558 L900 580 L951 568 L1020 535 L1074 564 L1130 590 L1185 574 L1250 545 L1308 564 L1360 585 L1422 561 L1480 550 L1537 562 L1600 590 L1600 700 Z" fill="#2a2450"/>
+  <path d="M0 610 L63 585 L120 560 L171 571 L210 590 L277 557 L330 520 L378 550 L430 575 L489 555 L560 540 L609 571 L660 585 L717 560 L790 530 L845 558 L900 580 L951 568 L1020 535 L1074 564 L1130 590 L1185 574 L1250 545 L1308 564 L1360 585 L1422 561 L1480 550 L1537 562 L1600 590" fill="none" stroke="#b9b3e0" stroke-opacity=".28" stroke-width="1"/>
+  <path d="M0 700 L0 592 L94 568 L155 602 L228 582 L340 563 L415 562 L477 591 L581 591 L665 602 L743 610 L821 570 L889 589 L961 601 L1076 594 L1136 597 L1246 589 L1348 610 L1458 567 L1600 612 L1600 700 Z" fill="url(#hills)" transform="translate(0 40)"/>
+  <path d="M0 900 L0 705 L0 700 L8 669 L15 700 L15 696 L26 671 L37 696 L37 701 L45 653 L53 701 L53 702 L62 649 L72 702 L72 696 L82 660 L92 696 L92 697 L100 647 L108 697 L108 707 L117 638 L126 707 L126 713 L136 677 L147 713 L147 697 L155 653 L163 697 L163 714 L174 645 L185 714 L185 702 L192 669 L200 702 L200 702 L208 677 L215 702 L215 701 L224 638 L232 701 L232 711 L240 658 L247 711 L247 698 L258 669 L268 698 L268 704 L278 648 L288 704 L288 701 L294 667 L301 701 L301 696 L312 662 L323 696 L323 704 L330 654 L336 704 L336 715 L347 652 L358 715 L358 700 L368 670 L378 700 L378 704 L384 645 L390 704 L390 714 L400 668 L409 714 L409 705 L415 659 L421 705 L421 708 L428 676 L434 708 L434 712 L440 666 L447 712 L447 714 L454 677 L462 714 L462 704 L472 669 L483 704 L483 701 L494 649 L505 701 L505 701 L511 665 L517 701 L517 698 L524 655 L530 698 L530 715 L538 663 L547 715 L547 699 L557 664 L567 699 L567 708 L573 676 L579 708 L579 701 L589 668 L599 701 L599 712 L606 669 L612 712 L612 713 L618 648 L625 713 L625 707 L634 650 L643 707 L643 699 L654 657 L664 699 L664 713 L671 664 L678 713 L678 707 L689 657 L700 707 L700 702 L706 668 L713 702 L713 699 L724 650 L734 699 L734 715 L744 674 L753 715 L753 702 L764 640 L774 702 L774 698 L784 628 L794 698 L794 705 L802 636 L810 705 L810 713 L818 683 L825 713 L825 702 L831 669 L837 702 L837 714 L846 652 L855 714 L855 695 L864 670 L873 695 L873 702 L879 663 L885 702 L885 701 L892 642 L898 701 L898 714 L905 661 L912 714 L912 711 L920 685 L928 711 L928 699 L939 658 L950 699 L950 713 L960 644 L971 713 L971 707 L980 670 L989 707 L989 703 L995 653 L1001 703 L1001 704 L1010 641 L1018 704 L1018 703 L1026 674 L1034 703 L1034 695 L1042 647 L1050 695 L1050 696 L1056 635 L1062 696 L1062 703 L1071 665 L1080 703 L1080 711 L1086 643 L1092 711 L1092 695 L1100 657 L1109 695 L1109 705 L1118 658 L1127 705 L1127 703 L1134 654 L1140 703 L1140 702 L1148 647 L1156 702 L1156 709 L1166 659 L1175 709 L1175 696 L1186 626 L1196 696 L1196 695 L1204 654 L1213 695 L1213 711 L1220 671 L1228 711 L1228 702 L1236 647 L1244 702 L1244 698 L1254 645 L1264 698 L1264 711 L1274 672 L1284 711 L1284 703 L1292 649 L1299 703 L1299 704 L1308 669 L1318 704 L1318 710 L1326 667 L1335 710 L1335 709 L1345 684 L1355 709 L1355 701 L1362 640 L1370 701 L1370 700 L1376 645 L1382 700 L1382 699 L1389 631 L1396 699 L1396 697 L1404 670 L1411 697 L1411 705 L1418 668 L1424 705 L1424 703 L1430 678 L1437 703 L1437 715 L1443 659 L1449 715 L1449 698 L1460 637 L1470 698 L1470 712 L1480 658 L1491 712 L1491 713 L1499 644 L1507 713 L1507 713 L1518 645 L1529 713 L1529 707 L1538 668 L1546 707 L1546 697 L1556 630 L1565 697 L1565 698 L1575 670 L1585 698 L1585 703 L1592 666 L1599 703 L1599 715 L1610 663 L1621 715 L1600 705 L1600 900 Z" fill="#0b1613"/>
+  <path d="M0 900 L0 770 L0 770 L10 690 L21 770 L21 774 L32 663 L42 774 L42 765 L53 669 L64 765 L64 763 L74 656 L85 763 L85 765 L98 675 L111 765 L111 774 L124 680 L138 774 L138 769 L148 649 L159 769 L159 758 L170 644 L181 758 L181 784 L190 716 L199 784 L199 778 L208 667 L218 778 L218 761 L231 684 L244 761 L244 777 L258 707 L271 777 L271 782 L280 677 L290 782 L290 783 L300 717 L310 783 L310 759 L323 702 L336 759 L336 777 L348 691 L361 777 L361 757 L371 642 L381 757 L381 774 L392 733 L403 774 L403 784 L416 724 L428 784 L428 779 L442 724 L455 779 L455 782 L467 691 L479 782 L479 759 L490 711 L500 759 L500 769 L514 724 L528 769 L528 765 L542 690 L556 765 L556 763 L565 719 L574 763 L574 778 L584 685 L593 778 L593 766 L604 661 L616 766 L616 760 L627 675 L638 760 L638 763 L649 659 L660 763 L660 764 L669 681 L678 764 L678 760 L692 683 L706 760 L706 756 L716 703 L725 756 L725 758 L738 694 L752 758 L752 768 L766 652 L780 768 L780 759 L794 678 L807 759 L807 770 L818 711 L830 770 L830 767 L840 671 L850 767 L850 769 L864 701 L877 769 L877 784 L888 670 L900 784 L900 761 L910 676 L919 761 L919 770 L933 689 L947 770 L947 781 L958 726 L969 781 L969 781 L980 734 L990 781 L990 784 L1001 738 L1012 784 L1012 762 L1021 670 L1030 762 L1030 773 L1040 684 L1051 773 L1051 778 L1064 722 L1076 778 L1076 776 L1086 694 L1096 776 L1096 761 L1108 721 L1120 761 L1120 776 L1132 727 L1143 776 L1143 762 L1152 652 L1161 762 L1161 771 L1174 722 L1186 771 L1186 782 L1196 673 L1205 782 L1205 770 L1216 670 L1227 770 L1227 764 L1239 701 L1251 764 L1251 760 L1264 703 L1276 760 L1276 765 L1288 720 L1300 765 L1300 759 L1310 667 L1321 759 L1321 767 L1333 709 L1345 767 L1345 772 L1358 676 L1370 772 L1370 766 L1382 646 L1393 766 L1393 781 L1403 717 L1413 781 L1413 782 L1426 690 L1439 782 L1439 776 L1452 666 L1465 776 L1465 779 L1476 728 L1486 779 L1486 771 L1500 671 L1513 771 L1513 783 L1525 732 L1537 783 L1537 769 L1546 674 L1555 769 L1555 764 L1564 715 L1573 764 L1573 770 L1586 677 L1599 770 L1599 781 L1608 737 L1617 781 L1600 770 L1600 900 Z" fill="#060b09"/>
+  <g><ellipse cx="1119" cy="873" rx="9" ry="2.7" fill="#0f2019"/><ellipse cx="846" cy="893" rx="9" ry="1.8" fill="#0f2019"/><ellipse cx="1174" cy="872" rx="8" ry="2.1" fill="#0f2019"/><ellipse cx="1195" cy="875" rx="7" ry="2.0" fill="#0f2019"/><ellipse cx="1333" cy="881" rx="6" ry="2.7" fill="#0f2019"/><ellipse cx="487" cy="887" rx="9" ry="1.6" fill="#0f2019"/><ellipse cx="995" cy="848" rx="7" ry="2.5" fill="#0f2019"/><ellipse cx="1042" cy="858" rx="5" ry="1.9" fill="#0f2019"/><ellipse cx="1387" cy="897" rx="8" ry="2.8" fill="#0f2019"/><ellipse cx="893" cy="870" rx="10" ry="2.9" fill="#0f2019"/><ellipse cx="1049" cy="859" rx="9" ry="2.7" fill="#0f2019"/><ellipse cx="524" cy="852" rx="9" ry="2.5" fill="#0f2019"/><ellipse cx="1548" cy="849" rx="9" ry="2.7" fill="#0f2019"/><ellipse cx="446" cy="857" rx="5" ry="1.8" fill="#0f2019"/><ellipse cx="599" cy="899" rx="7" ry="2.9" fill="#0f2019"/><ellipse cx="778" cy="897" rx="8" ry="2.4" fill="#0f2019"/><ellipse cx="989" cy="832" rx="4" ry="2.9" fill="#0f2019"/><ellipse cx="262" cy="844" rx="4" ry="2.2" fill="#0f2019"/><ellipse cx="208" cy="869" rx="8" ry="2.3" fill="#0f2019"/><ellipse cx="967" cy="835" rx="5" ry="2.2" fill="#0f2019"/><ellipse cx="48" cy="876" rx="4" ry="2.6" fill="#0f2019"/><ellipse cx="616" cy="891" rx="9" ry="1.5" fill="#0f2019"/><ellipse cx="1182" cy="842" rx="6" ry="2.3" fill="#0f2019"/><ellipse cx="985" cy="861" rx="8" ry="2.8" fill="#0f2019"/><ellipse cx="1107" cy="838" rx="5" ry="2.4" fill="#0f2019"/><ellipse cx="1225" cy="868" rx="5" ry="2.3" fill="#0f2019"/><ellipse cx="978" cy="825" rx="9" ry="1.9" fill="#0f2019"/><ellipse cx="509" cy="858" rx="7" ry="2.2" fill="#0f2019"/><ellipse cx="1192" cy="871" rx="9" ry="2.6" fill="#0f2019"/><ellipse cx="1069" cy="868" rx="7" ry="2.3" fill="#0f2019"/><ellipse cx="514" cy="870" rx="5" ry="2.2" fill="#0f2019"/><ellipse cx="1076" cy="830" rx="8" ry="2.3" fill="#0f2019"/><ellipse cx="423" cy="866" rx="5" ry="2.0" fill="#0f2019"/><ellipse cx="1391" cy="897" rx="8" ry="1.5" fill="#0f2019"/><ellipse cx="817" cy="875" rx="5" ry="2.6" fill="#0f2019"/><ellipse cx="133" cy="869" rx="8" ry="2.4" fill="#0f2019"/><ellipse cx="731" cy="866" rx="5" ry="3.0" fill="#0f2019"/><ellipse cx="307" cy="883" rx="8" ry="1.6" fill="#0f2019"/><ellipse cx="755" cy="855" rx="9" ry="2.4" fill="#0f2019"/><ellipse cx="769" cy="837" rx="5" ry="2.9" fill="#0f2019"/><ellipse cx="327" cy="898" rx="9" ry="1.6" fill="#0f2019"/><ellipse cx="208" cy="876" rx="10" ry="2.5" fill="#0f2019"/><ellipse cx="1197" cy="888" rx="7" ry="2.7" fill="#0f2019"/><ellipse cx="1446" cy="831" rx="7" ry="1.9" fill="#0f2019"/><ellipse cx="65" cy="894" rx="7" ry="2.9" fill="#0f2019"/><ellipse cx="638" cy="834" rx="6" ry="1.5" fill="#0f2019"/><ellipse cx="286" cy="867" rx="4" ry="2.3" fill="#0f2019"/><ellipse cx="262" cy="875" rx="9" ry="2.0" fill="#0f2019"/><ellipse cx="523" cy="857" rx="9" ry="1.9" fill="#0f2019"/><ellipse cx="777" cy="842" rx="8" ry="1.7" fill="#0f2019"/><ellipse cx="251" cy="839" rx="6" ry="2.1" fill="#0f2019"/><ellipse cx="722" cy="833" rx="7" ry="1.8" fill="#0f2019"/><ellipse cx="374" cy="838" rx="9" ry="2.9" fill="#0f2019"/><ellipse cx="693" cy="887" rx="5" ry="2.6" fill="#0f2019"/><ellipse cx="1299" cy="874" rx="8" ry="2.9" fill="#0f2019"/><ellipse cx="1134" cy="868" rx="7" ry="2.7" fill="#0f2019"/><ellipse cx="380" cy="897" rx="4" ry="1.9" fill="#0f2019"/><ellipse cx="995" cy="869" rx="8" ry="2.5" fill="#0f2019"/><ellipse cx="675" cy="878" rx="10" ry="2.3" fill="#0f2019"/><ellipse cx="243" cy="885" rx="9" ry="1.7" fill="#0f2019"/></g>
+  <g><circle cx="116" cy="886" r="4.2" fill="#f08a3c" opacity="0.80"/><circle cx="618" cy="872" r="4.1" fill="#f08a3c" opacity="0.85"/><circle cx="1569" cy="865" r="4.7" fill="#f08a3c" opacity="0.80"/><circle cx="1070" cy="822" r="2.8" fill="#e2572f" opacity="0.79"/><circle cx="653" cy="836" r="1.8" fill="#c7402a" opacity="0.82"/><circle cx="809" cy="812" r="2.6" fill="#f5a25a" opacity="0.82"/><circle cx="843" cy="889" r="3.2" fill="#f08a3c" opacity="0.90"/><circle cx="4" cy="867" r="3.4" fill="#e2572f" opacity="0.88"/><circle cx="295" cy="818" r="3.3" fill="#d9492b" opacity="0.57"/><circle cx="1297" cy="816" r="4.2" fill="#d9492b" opacity="0.80"/><circle cx="1455" cy="847" r="4.4" fill="#e2572f" opacity="0.82"/><circle cx="785" cy="867" r="2.9" fill="#f5a25a" opacity="0.92"/><circle cx="1211" cy="813" r="4.6" fill="#f5a25a" opacity="0.69"/><circle cx="1584" cy="829" r="3.0" fill="#c7402a" opacity="0.74"/><circle cx="1450" cy="810" r="2.7" fill="#c7402a" opacity="0.85"/><circle cx="425" cy="872" r="4.7" fill="#f5a25a" opacity="0.71"/><circle cx="1491" cy="887" r="4.7" fill="#f5a25a" opacity="0.73"/><circle cx="1320" cy="809" r="2.1" fill="#c7402a" opacity="0.78"/><circle cx="588" cy="832" r="1.7" fill="#f5a25a" opacity="0.80"/><circle cx="918" cy="878" r="4.5" fill="#e2572f" opacity="0.94"/><circle cx="368" cy="870" r="3.8" fill="#f5a25a" opacity="0.88"/><circle cx="711" cy="855" r="2.2" fill="#f08a3c" opacity="0.79"/><circle cx="560" cy="872" r="5.3" fill="#d9492b" opacity="0.88"/><circle cx="1465" cy="817" r="4.2" fill="#f08a3c" opacity="0.90"/><circle cx="1377" cy="869" r="3.4" fill="#f08a3c" opacity="0.66"/><circle cx="1560" cy="877" r="2.8" fill="#f08a3c" opacity="0.86"/><circle cx="757" cy="857" r="3.5" fill="#c7402a" opacity="0.92"/><circle cx="940" cy="875" r="6.0" fill="#f5a25a" opacity="0.66"/><circle cx="639" cy="865" r="3.1" fill="#c7402a" opacity="0.76"/><circle cx="873" cy="865" r="4.3" fill="#f08a3c" opacity="0.56"/><circle cx="96" cy="826" r="2.6" fill="#c7402a" opacity="0.90"/><circle cx="117" cy="824" r="3.8" fill="#d9492b" opacity="0.69"/><circle cx="1574" cy="813" r="3.4" fill="#f08a3c" opacity="0.79"/><circle cx="5" cy="836" r="2.1" fill="#f5a25a" opacity="0.82"/><circle cx="1418" cy="898" r="3.6" fill="#f08a3c" opacity="0.68"/><circle cx="763" cy="805" r="3.3" fill="#f08a3c" opacity="0.75"/><circle cx="3" cy="851" r="2.6" fill="#f5a25a" opacity="0.65"/><circle cx="1282" cy="842" r="2.5" fill="#e2572f" opacity="0.87"/><circle cx="1174" cy="853" r="3.0" fill="#d9492b" opacity="0.77"/><circle cx="261" cy="874" r="5.2" fill="#e2572f" opacity="0.73"/><circle cx="797" cy="859" r="2.4" fill="#e2572f" opacity="0.66"/><circle cx="686" cy="856" r="3.6" fill="#e2572f" opacity="0.85"/><circle cx="440" cy="889" r="5.3" fill="#f08a3c" opacity="0.79"/><circle cx="866" cy="803" r="2.1" fill="#f08a3c" opacity="0.78"/><circle cx="232" cy="849" r="4.3" fill="#d9492b" opacity="0.89"/><circle cx="1144" cy="836" r="3.9" fill="#f5a25a" opacity="0.62"/><circle cx="1348" cy="878" r="3.2" fill="#c7402a" opacity="0.62"/><circle cx="712" cy="895" r="4.0" fill="#f5a25a" opacity="0.95"/><circle cx="982" cy="840" r="2.3" fill="#d9492b" opacity="0.91"/><circle cx="882" cy="802" r="4.7" fill="#e2572f" opacity="0.60"/><circle cx="943" cy="886" r="5.6" fill="#d9492b" opacity="0.76"/><circle cx="182" cy="888" r="5.3" fill="#f08a3c" opacity="0.80"/><circle cx="290" cy="840" r="3.4" fill="#e2572f" opacity="0.64"/><circle cx="612" cy="871" r="3.4" fill="#c7402a" opacity="0.78"/><circle cx="597" cy="873" r="4.3" fill="#e2572f" opacity="0.78"/><circle cx="264" cy="844" r="2.5" fill="#f08a3c" opacity="0.60"/><circle cx="118" cy="855" r="4.2" fill="#d9492b" opacity="0.69"/><circle cx="417" cy="868" r="3.3" fill="#f5a25a" opacity="0.91"/><circle cx="595" cy="894" r="3.9" fill="#e2572f" opacity="0.59"/><circle cx="145" cy="848" r="3.0" fill="#f08a3c" opacity="0.64"/><circle cx="623" cy="859" r="4.5" fill="#d9492b" opacity="0.86"/><circle cx="689" cy="826" r="4.9" fill="#d9492b" opacity="0.58"/><circle cx="1113" cy="823" r="2.8" fill="#f5a25a" opacity="0.89"/><circle cx="312" cy="843" r="4.0" fill="#f5a25a" opacity="0.83"/><circle cx="569" cy="852" r="4.3" fill="#d9492b" opacity="0.69"/><circle cx="1207" cy="836" r="1.6" fill="#d9492b" opacity="0.72"/><circle cx="927" cy="899" r="2.1" fill="#e2572f" opacity="0.77"/><circle cx="1139" cy="831" r="4.7" fill="#f5a25a" opacity="0.95"/><circle cx="667" cy="881" r="6.0" fill="#d9492b" opacity="0.74"/><circle cx="1287" cy="853" r="2.2" fill="#c7402a" opacity="0.55"/><circle cx="1191" cy="864" r="3.8" fill="#e2572f" opacity="0.87"/><circle cx="405" cy="834" r="2.4" fill="#f08a3c" opacity="0.77"/><circle cx="1293" cy="886" r="2.4" fill="#f08a3c" opacity="0.94"/><circle cx="288" cy="845" r="5.2" fill="#c7402a" opacity="0.71"/><circle cx="1590" cy="885" r="3.5" fill="#f5a25a" opacity="0.70"/><circle cx="231" cy="850" r="4.7" fill="#f5a25a" opacity="0.64"/><circle cx="78" cy="882" r="4.6" fill="#d9492b" opacity="0.56"/><circle cx="1599" cy="818" r="3.4" fill="#c7402a" opacity="0.71"/><circle cx="1478" cy="896" r="4.0" fill="#e2572f" opacity="0.93"/><circle cx="546" cy="822" r="4.6" fill="#d9492b" opacity="0.61"/><circle cx="523" cy="856" r="3.2" fill="#e2572f" opacity="0.76"/><circle cx="154" cy="829" r="3.4" fill="#c7402a" opacity="0.75"/><circle cx="178" cy="831" r="4.2" fill="#f5a25a" opacity="0.81"/><circle cx="1097" cy="871" r="5.8" fill="#f08a3c" opacity="0.59"/><circle cx="980" cy="839" r="4.9" fill="#f5a25a" opacity="0.90"/><circle cx="1077" cy="888" r="3.8" fill="#f08a3c" opacity="0.56"/><circle cx="933" cy="833" r="3.0" fill="#e2572f" opacity="0.57"/><circle cx="1597" cy="867" r="3.4" fill="#c7402a" opacity="0.68"/><circle cx="859" cy="826" r="1.8" fill="#e2572f" opacity="0.90"/><circle cx="491" cy="895" r="6.1" fill="#f5a25a" opacity="0.84"/><circle cx="461" cy="855" r="3.7" fill="#f5a25a" opacity="0.68"/><circle cx="1147" cy="817" r="3.6" fill="#f08a3c" opacity="0.70"/><circle cx="1194" cy="802" r="1.7" fill="#f5a25a" opacity="0.64"/><circle cx="1270" cy="844" r="3.5" fill="#e2572f" opacity="0.87"/><circle cx="44" cy="878" r="2.4" fill="#d9492b" opacity="0.88"/><circle cx="1589" cy="843" r="2.8" fill="#f08a3c" opacity="0.67"/><circle cx="1532" cy="894" r="5.5" fill="#f08a3c" opacity="0.75"/><circle cx="975" cy="880" r="5.2" fill="#f5a25a" opacity="0.58"/><circle cx="703" cy="871" r="3.2" fill="#f5a25a" opacity="0.91"/><circle cx="432" cy="859" r="3.6" fill="#d9492b" opacity="0.77"/><circle cx="873" cy="890" r="3.2" fill="#e2572f" opacity="0.80"/><circle cx="1103" cy="837" r="5.0" fill="#e2572f" opacity="0.77"/><circle cx="1417" cy="899" r="5.7" fill="#c7402a" opacity="0.88"/><circle cx="937" cy="856" r="4.9" fill="#d9492b" opacity="0.60"/><circle cx="1098" cy="875" r="5.5" fill="#d9492b" opacity="0.59"/><circle cx="452" cy="841" r="2.1" fill="#d9492b" opacity="0.55"/><circle cx="597" cy="836" r="1.8" fill="#f5a25a" opacity="0.63"/><circle cx="258" cy="894" r="6.0" fill="#f5a25a" opacity="0.81"/><circle cx="1540" cy="888" r="4.9" fill="#f08a3c" opacity="0.73"/><circle cx="651" cy="871" r="3.4" fill="#e2572f" opacity="0.75"/><circle cx="371" cy="818" r="3.0" fill="#c7402a" opacity="0.93"/><circle cx="912" cy="863" r="3.3" fill="#e2572f" opacity="0.89"/><circle cx="1490" cy="862" r="5.2" fill="#e2572f" opacity="0.58"/><circle cx="242" cy="843" r="3.4" fill="#f5a25a" opacity="0.72"/><circle cx="581" cy="827" r="2.1" fill="#e2572f" opacity="0.89"/><circle cx="583" cy="885" r="3.9" fill="#f08a3c" opacity="0.61"/><circle cx="1041" cy="843" r="5.0" fill="#e2572f" opacity="0.81"/><circle cx="1463" cy="878" r="2.6" fill="#d9492b" opacity="0.87"/><circle cx="180" cy="845" r="4.5" fill="#e2572f" opacity="0.85"/><circle cx="1049" cy="849" r="2.0" fill="#d9492b" opacity="0.75"/><circle cx="1407" cy="887" r="6.4" fill="#e2572f" opacity="0.85"/><circle cx="542" cy="864" r="3.9" fill="#f5a25a" opacity="0.58"/><circle cx="1411" cy="835" r="3.2" fill="#f08a3c" opacity="0.69"/><circle cx="353" cy="837" r="2.0" fill="#f08a3c" opacity="0.83"/><circle cx="562" cy="820" r="3.0" fill="#f5a25a" opacity="0.85"/><circle cx="465" cy="824" r="4.2" fill="#f5a25a" opacity="0.55"/><circle cx="901" cy="805" r="2.4" fill="#d9492b" opacity="0.89"/><circle cx="541" cy="807" r="3.1" fill="#c7402a" opacity="0.61"/><circle cx="485" cy="859" r="2.4" fill="#f5a25a" opacity="0.85"/><circle cx="736" cy="833" r="2.4" fill="#c7402a" opacity="0.71"/><circle cx="932" cy="805" r="4.3" fill="#c7402a" opacity="0.61"/><circle cx="456" cy="833" r="5.2" fill="#c7402a" opacity="0.95"/><circle cx="1367" cy="837" r="1.8" fill="#f5a25a" opacity="0.74"/><circle cx="146" cy="844" r="3.4" fill="#f08a3c" opacity="0.93"/><circle cx="919" cy="891" r="5.0" fill="#f08a3c" opacity="0.85"/><circle cx="328" cy="879" r="6.1" fill="#f08a3c" opacity="0.62"/><circle cx="71" cy="854" r="4.1" fill="#e2572f" opacity="0.82"/><circle cx="1076" cy="879" r="5.0" fill="#c7402a" opacity="0.77"/><circle cx="624" cy="884" r="2.4" fill="#f08a3c" opacity="0.82"/><circle cx="1078" cy="844" r="5.1" fill="#c7402a" opacity="0.69"/><circle cx="1523" cy="847" r="2.1" fill="#d9492b" opacity="0.79"/><circle cx="501" cy="830" r="3.2" fill="#f5a25a" opacity="0.83"/><circle cx="1185" cy="807" r="4.5" fill="#c7402a" opacity="0.67"/><circle cx="153" cy="889" r="3.0" fill="#f5a25a" opacity="0.77"/><circle cx="1497" cy="838" r="3.5" fill="#c7402a" opacity="0.58"/><circle cx="164" cy="867" r="2.3" fill="#f5a25a" opacity="0.59"/><circle cx="1057" cy="868" r="3.4" fill="#f5a25a" opacity="0.85"/><circle cx="1418" cy="884" r="2.8" fill="#f5a25a" opacity="0.76"/><circle cx="597" cy="866" r="2.7" fill="#d9492b" opacity="0.95"/><circle cx="1219" cy="823" r="3.1" fill="#f08a3c" opacity="0.91"/></g>
+  <rect y="860" width="1600" height="40" fill="url(#floor)"/>
+</svg>
+<div class="veil" aria-hidden="true"></div>
 
-    <div class="grid2" style="margin-top:16px">
-      <section>
-        <h2>Users</h2>
-        <form id="newUser">
-          <input name="email" type="email" placeholder="email" required>
-          <input name="initial_balance" type="number" step="0.01" min="0" placeholder="starting balance $">
-          <input name="country" maxlength="2" placeholder="country (US, IN…)" aria-label="country">
-          <button class="primary">Create user</button>
-        </form>
-        <div class="scroll"><table id="users"><thead><tr><th>Email</th><th>Balance</th><th>Country</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>
-      </section>
-
-      <section id="userPanel" class="hidden">
-        <h2 id="userTitle">User</h2>
-        <p class="muted" id="userFee"></p>
-        <form id="country">
-          <input name="country" maxlength="2" placeholder="country code (blank = full fee)" aria-label="country">
-          <button>Set country</button>
-        </form>
-        <form id="credit">
-          <input name="amount" type="number" step="0.01" placeholder="amount $ (negative to debit)" required>
-          <input name="note" placeholder="note">
-          <button>Adjust balance</button>
-        </form>
-        <form id="newKey">
-          <select name="domain" aria-label="domain" id="keyDomain"><option value="">all domains</option></select>
-          <select name="provider" aria-label="AI provider" id="keyProvider"><option>any</option></select>
-          <input name="name" placeholder="key label">
-          <input name="rate_limit_per_minute" type="number" min="1" placeholder="req/min (default)">
-          <button class="primary">Issue key</button>
-        </form>
-        <div id="newSecret" class="secret hidden"></div>
-        <div class="scroll"><table id="keys"><thead><tr><th>Prefix</th><th>Label</th><th>Domain</th><th>Provider</th><th>Status</th><th>Last used</th><th></th></tr></thead><tbody></tbody></table></div>
-        <p><button id="toggleStatus"></button></p>
-      </section>
-    </div>
-
-    <section style="margin-top:16px">
-      <h2>Pricing</h2>
-      <p class="muted" id="defaultFee"></p>
-      <form id="pricing">
-        <select name="provider" aria-label="provider" id="priceProvider"><option>*</option></select>
-        <input name="model" placeholder="model (* = all)" value="*">
-        <input name="fee_per_request" type="number" step="0.000001" min="0" placeholder="$ per request" required>
-        <input name="fee_per_1k_tokens" type="number" step="0.000001" min="0" placeholder="$ per 1k tokens" value="0">
-        <button class="primary">Save rule</button>
-      </form>
-      <div class="scroll"><table id="rules"><thead><tr><th>Provider</th><th>Model</th><th>Per request</th><th>Per 1k tokens</th><th></th></tr></thead><tbody></tbody></table></div>
-    </section>
-
-    <section style="margin-top:16px">
-      <h2>Domains</h2>
-      <p class="muted">Each kind of digital business has its own transaction types and checked fields. Price a domain with a pricing rule whose provider is the domain name.</p>
-      <div class="scroll"><table id="domains"><thead><tr><th>Domain</th><th>Examples</th><th>Types</th><th>Fee</th><th>Locked keys</th><th>30-day tx</th><th>30-day revenue</th></tr></thead><tbody></tbody></table></div>
-    </section>
-
-    <section style="margin-top:16px">
-      <h2>Fees by country</h2>
-      <p class="muted" id="countrySummary"></p>
-      <form id="countryOverride">
-        <input name="country" maxlength="2" placeholder="country code" required aria-label="country">
-        <input name="multiplier" type="number" step="0.01" min="0.01" max="10" placeholder="multiplier (1 = full fee)" required>
-        <button class="primary">Save override</button>
-      </form>
-      <div class="scroll"><table id="overrides"><thead><tr><th>Country</th><th>Default group</th><th>Multiplier</th><th>Fee</th><th></th></tr></thead><tbody></tbody></table></div>
-    </section>
-
-    <section style="margin-top:16px">
-      <h2>Recent transactions (all types)</h2>
-      <div class="scroll"><table id="charges"><thead><tr><th>Time</th><th>User</th><th>Domain</th><th>Type</th><th>Reference</th><th>Amount</th><th>Country</th><th>Fee</th></tr></thead><tbody></tbody></table></div>
-    </section>
-
-    <section style="margin-top:16px">
-      <h2>Recent AI requests</h2>
-      <div class="scroll"><table id="txs"><thead><tr><th>Time</th><th>User</th><th>Provider</th><th>Model</th><th>Tokens</th><th>Fee</th><th>Status</th><th>Latency</th></tr></thead><tbody></tbody></table></div>
-    </section>
-
-    <section style="margin-top:16px">
-      <h2>Rejected requests</h2>
-      <div class="scroll"><table id="audit"><thead><tr><th>Time</th><th>Status</th><th>Outcome</th><th>Key</th><th>IP</th><th>Path</th><th>Detail</th></tr></thead><tbody></tbody></table></div>
-    </section>
+<main id="lock" class="layer lock">
+  <div class="lock-card">
+    <h1 class="wordmark">toolbar<span>admin</span></h1>
+    <p class="lede">the control room for fees, accounts and keys.</p>
+    <form id="unlock" autocomplete="off" novalidate>
+      <label class="field">
+        <span>admin token</span>
+        <input id="token" name="token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+      </label>
+      <button class="btn solid" type="submit">unlock</button>
+    </form>
+    <p id="lockMsg" class="lock-msg" role="status" aria-live="polite"></p>
+    <p class="fine">the token is traded for a short session held in a secure, http-only cookie. it is never kept in this page, so nothing in the browser can read it back.</p>
   </div>
 </main>
+
+<div id="app" class="layer" hidden>
+  <header class="topbar">
+    <p class="wordmark">toolbar<span>admin</span></p>
+    <span class="spacer"></span>
+    <span class="beacon"><i aria-hidden="true"></i><span id="beaconText">signed in</span></span>
+    <button type="button" class="btn quiet small" id="refresh">refresh</button>
+    <button type="button" class="btn small" id="lockNow">lock</button>
+  </header>
+
+  <div class="shell">
+    <nav class="rooms" id="rooms" aria-label="rooms">
+      <button type="button" data-room="overview">overview</button>
+      <button type="button" data-room="accounts">accounts</button>
+      <button type="button" data-room="domains">domains</button>
+      <button type="button" data-room="pricing">pricing</button>
+      <button type="button" data-room="countries">countries</button>
+      <button type="button" data-room="ledger">ledger</button>
+      <button type="button" data-room="security">security</button>
+    </nav>
+
+    <main id="rooms-body">
+      <!-- overview -->
+      <section class="room" data-room="overview" id="room-overview" aria-labelledby="h-overview" hidden>
+        <header>
+          <h2 id="h-overview" tabindex="-1">overview</h2>
+          <p class="lede">what the platform earned, and what is running right now.</p>
+        </header>
+        <div class="stack">
+          <div class="panel">
+            <div class="hero">
+              <div><div class="big" id="heroRevenue">—</div><div class="cap">fees earned · 30 days</div></div>
+              <div><div class="big" id="heroToday">—</div><div class="cap">fees earned · 24 hours</div></div>
+            </div>
+            <svg class="chart" id="ridge" viewBox="0 0 600 170" preserveAspectRatio="none" role="img" aria-labelledby="ridgeLabel">
+              <title id="ridgeLabel">fees per day over 30 days</title>
+              <defs>
+                <linearGradient id="ridgeFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#aaa6c7" stop-opacity="0.34"/>
+                  <stop offset="1" stop-color="#aaa6c7" stop-opacity="0"/>
+                </linearGradient>
+              </defs>
+              <g id="ridgeBody"></g>
+            </svg>
+            <div class="axis"><span id="axisStart"></span><span id="axisPeak"></span><span id="axisEnd">today</span></div>
+          </div>
+          <div class="metrics" id="metrics"></div>
+          <div class="split">
+            <div class="panel">
+              <h3>providers</h3>
+              <p class="note" id="providerNote"></p>
+              <p class="data muted" id="providerList"></p>
+            </div>
+            <div class="panel">
+              <h3>payments</h3>
+              <p class="note">stripe checkout tops up balances. the test opens a real $5 checkout page; nothing is charged unless someone pays, and a test payment credits no one.</p>
+              <div class="actions">
+                <span class="tag" id="stripeState">stripe</span>
+                <button type="button" class="btn small" id="stripeTest">test stripe checkout</button>
+              </div>
+              <p class="muted" id="stripeResult" aria-live="polite"></p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- accounts -->
+      <section class="room" data-room="accounts" id="room-accounts" aria-labelledby="h-accounts" hidden>
+        <header>
+          <h2 id="h-accounts" tabindex="-1">accounts</h2>
+          <p class="lede">everyone who pays fees. open an account to change its balance, country or keys.</p>
+        </header>
+        <div class="split lean">
+          <div class="panel">
+            <h3>new account</h3>
+            <p class="note">country sets the fee level; leave it empty for the full fee.</p>
+            <form id="newUser" class="fields">
+              <label class="field wide"><span>email</span><input name="email" type="email" required autocomplete="off"></label>
+              <label class="field"><span>starting balance, usd</span><input name="initial_balance" type="number" step="0.01" min="0" inputmode="decimal" placeholder="0.00"></label>
+              <label class="field"><span>country</span><input name="country" maxlength="2" placeholder="us, in, ng…" autocomplete="off"></label>
+              <button class="btn solid" type="submit">create account</button>
+            </form>
+            <hr class="divider">
+            <div class="scroll">
+              <table id="users"><thead><tr><th>email</th><th class="num">balance</th><th>country</th><th>status</th><th><span class="faint">open</span></th></tr></thead><tbody></tbody></table>
+            </div>
+          </div>
+
+          <div class="panel" id="userPanel" aria-live="polite">
+            <div id="userEmpty"><h3>no account open</h3><p class="note">choose an account from the list to see it here.</p></div>
+            <div id="userBody" hidden>
+              <div class="account-head"><h3 class="data" id="userTitle"></h3><span class="bal" id="userBalance"></span></div>
+              <p class="note" id="userFee"></p>
+              <form id="country" class="fields">
+                <label class="field"><span>country (empty = full fee)</span><input name="country" maxlength="2" autocomplete="off"></label>
+                <button class="btn" type="submit">set country</button>
+              </form>
+              <form id="credit" class="fields">
+                <label class="field"><span>amount, usd (negative takes money)</span><input name="amount" type="number" step="0.01" inputmode="decimal" required></label>
+                <label class="field"><span>note</span><input name="note" maxlength="500" autocomplete="off"></label>
+                <button class="btn" type="submit">adjust balance</button>
+              </form>
+              <hr class="divider">
+              <h3>keys</h3>
+              <p class="note">a key can be locked to one domain or one ai provider.</p>
+              <form id="newKey" class="fields">
+                <label class="field"><span>domain</span><select name="domain" id="keyDomain"><option value="">all domains</option></select></label>
+                <label class="field"><span>ai provider</span><select name="provider" id="keyProvider"><option value="any">any</option></select></label>
+                <label class="field"><span>label</span><input name="name" maxlength="100" autocomplete="off"></label>
+                <label class="field"><span>requests / min</span><input name="rate_limit_per_minute" type="number" min="1" placeholder="default"></label>
+                <button class="btn solid" type="submit">issue key</button>
+              </form>
+              <div id="secret" class="secret" hidden role="alert">
+                <p>new key — copy it now. it is shown once and never stored in readable form.</p>
+                <code id="secretValue"></code>
+                <div class="actions">
+                  <button type="button" class="btn small" id="secretCopy">copy</button>
+                  <button type="button" class="btn quiet small" id="secretHide">hide now</button>
+                  <span class="faint" id="secretCount"></span>
+                </div>
+              </div>
+              <div class="scroll">
+                <table id="keys"><thead><tr><th>key</th><th>label</th><th>domain</th><th>provider</th><th>status</th><th>last used</th><th></th></tr></thead><tbody></tbody></table>
+              </div>
+              <hr class="divider">
+              <div class="actions"><button type="button" class="btn" id="toggleStatus"></button></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- domains -->
+      <section class="room" data-room="domains" id="room-domains" aria-labelledby="h-domains" hidden>
+        <header>
+          <h2 id="h-domains" tabindex="-1">domains</h2>
+          <p class="lede">each kind of digital business has its own transaction types and checked fields. price a domain in pricing, using the domain as the provider.</p>
+        </header>
+        <div class="panel">
+          <div class="scroll">
+            <table id="domains"><thead><tr><th>domain</th><th>for</th><th>types</th><th class="num">fee</th><th class="num">locked keys</th><th class="num">30-day tx</th><th class="num">30-day fees</th></tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+      </section>
+
+      <!-- pricing -->
+      <section class="room" data-room="pricing" id="room-pricing" aria-labelledby="h-pricing" hidden>
+        <header>
+          <h2 id="h-pricing" tabindex="-1">pricing</h2>
+          <p class="lede" id="defaultFee">the most specific rule wins.</p>
+        </header>
+        <div class="stack">
+          <div class="panel">
+            <h3>add or change a rule</h3>
+            <p class="note">provider can be an ai provider or a domain. model * means every model.</p>
+            <form id="pricing" class="fields">
+              <label class="field wide"><span>provider or domain</span><select name="provider" id="priceProvider"><option value="*">* every provider</option></select></label>
+              <label class="field"><span>model</span><input name="model" value="*" autocomplete="off"></label>
+              <label class="field"><span>usd per request</span><input name="fee_per_request" type="number" step="0.000001" min="0" inputmode="decimal" required></label>
+              <label class="field"><span>usd per 1k tokens</span><input name="fee_per_1k_tokens" type="number" step="0.000001" min="0" value="0" inputmode="decimal"></label>
+              <button class="btn solid" type="submit">save rule</button>
+            </form>
+          </div>
+          <div class="panel">
+            <div class="scroll">
+              <table id="rules"><thead><tr><th>provider</th><th>model</th><th class="num">per request</th><th class="num">per 1k tokens</th><th></th></tr></thead><tbody></tbody></table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- countries -->
+      <section class="room" data-room="countries" id="room-countries" aria-labelledby="h-countries" hidden>
+        <header>
+          <h2 id="h-countries" tabindex="-1">countries</h2>
+          <p class="lede">the fee is set in usd and scaled to each economy, by world bank income group, unless you override a country.</p>
+        </header>
+        <div class="stack">
+          <div class="metrics" id="groups"></div>
+          <div class="panel">
+            <h3>override a country</h3>
+            <p class="note">1 is the full fee; 0.25 is a quarter of it.</p>
+            <form id="countryOverride" class="fields">
+              <label class="field"><span>country code</span><input name="country" maxlength="2" required autocomplete="off"></label>
+              <label class="field"><span>multiplier</span><input name="multiplier" type="number" step="0.01" min="0.01" max="10" inputmode="decimal" required></label>
+              <button class="btn solid" type="submit">save override</button>
+            </form>
+            <div class="scroll">
+              <table id="overrides"><thead><tr><th>country</th><th>default group</th><th class="num">multiplier</th><th class="num">fee</th><th></th></tr></thead><tbody></tbody></table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ledger -->
+      <section class="room" data-room="ledger" id="room-ledger" aria-labelledby="h-ledger" hidden>
+        <header>
+          <h2 id="h-ledger" tabindex="-1">ledger</h2>
+          <p class="lede">the latest fees taken, ai requests passed through, and requests that were turned away.</p>
+        </header>
+        <div class="stack">
+          <div class="panel">
+            <h3>transactions</h3>
+            <p class="note">every domain: payments, trades, transfers, orders.</p>
+            <div class="scroll"><table id="charges"><thead><tr><th>time</th><th>account</th><th>domain</th><th>type</th><th>reference</th><th class="num">amount</th><th>country</th><th class="num">fee</th></tr></thead><tbody></tbody></table></div>
+          </div>
+          <div class="panel">
+            <h3>ai requests</h3>
+            <div class="scroll"><table id="txs"><thead><tr><th>time</th><th>account</th><th>provider</th><th>model</th><th class="num">tokens</th><th class="num">fee</th><th>status</th><th class="num">latency</th></tr></thead><tbody></tbody></table></div>
+          </div>
+          <div class="panel">
+            <h3>turned away</h3>
+            <p class="note">rejected requests and failed admin sign-ins.</p>
+            <div class="scroll"><table id="audit"><thead><tr><th>time</th><th class="num">status</th><th>reason</th><th>key</th><th>ip</th><th>path</th><th>detail</th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- security -->
+      <section class="room" data-room="security" id="room-security" aria-labelledby="h-security" hidden>
+        <header>
+          <h2 id="h-security" tabindex="-1">security</h2>
+          <p class="lede">who is signed in, and how this dashboard keeps its keys to itself.</p>
+        </header>
+        <div class="stack">
+          <div class="panel">
+            <h3>signed-in browsers</h3>
+            <p class="note" id="sessionNote"></p>
+            <div class="scroll"><table id="sessions"><thead><tr><th>signed in</th><th>last active</th><th>ends</th><th>ip</th><th>browser</th><th></th></tr></thead><tbody></tbody></table></div>
+            <hr class="divider">
+            <div class="actions">
+              <button type="button" class="btn" id="lockNow2">lock this browser</button>
+              <button type="button" class="btn warn" id="endAll">sign out every browser</button>
+            </div>
+          </div>
+          <div class="panel">
+            <h3>protections</h3>
+            <ul class="protections">
+              <li>the admin token is swapped for a session that lives only in a secure, http-only, same-site cookie. page scripts, extensions reading the page and the browser console cannot read it.</li>
+              <li>only this page's own script and styles run, pinned by hash. nothing loads from any other domain, and text can never turn into code.</li>
+              <li>changes are accepted only from this page on this domain. another site cannot make your browser send them.</li>
+              <li>the dashboard answers only on its own domain and, if set, from allowed ip addresses. everywhere else it does not exist.</li>
+              <li id="idleLine">sessions lock after inactivity, end within hours at most, and die when the browser changes.</li>
+              <li>wrong tokens are slowed to a few tries a minute per address and written to the ledger.</li>
+              <li>new api keys are shown once, hidden again after 90 seconds, and stored only as a hash.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<dialog id="confirm" aria-labelledby="confirmTitle" aria-describedby="confirmText">
+  <h3 id="confirmTitle"></h3>
+  <p id="confirmText"></p>
+  <div class="actions">
+    <button type="button" class="btn quiet" id="confirmCancel">cancel</button>
+    <button type="button" class="btn warn" id="confirmGo"></button>
+  </div>
+</dialog>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
 <script>
 (() => {
-  const $ = (s) => document.querySelector(s);
-  let token = '';
-  try { token = sessionStorage.getItem('adminToken') || ''; } catch (e) {}
+  'use strict';
+
+  // A note for anyone who opens the console on this page.
+  console.log('%cstop.', 'font: 200 42px system-ui, sans-serif; color: #f2a07b;');
+  console.log('%cthis console is for developers. if someone asked you to paste something here, they are trying to take over this dashboard. close it.\nthe admin token and session cookie are not readable from here.', 'font: 14px system-ui, sans-serif; color: #ece7f3; line-height: 1.6;');
+
+  const $ = (s, root = document) => root.querySelector(s);
+  const $$ = (s, root = document) => Array.from(root.querySelectorAll(s));
+  const SVG = 'http://www.w3.org/2000/svg';
+  const ROOMS = ['overview', 'accounts', 'domains', 'pricing', 'countries', 'ledger', 'security'];
+  const SECRET_SECONDS = 90;
+
+  class Locked extends Error {}
+
+  // ------------------------------------------------------------ dom (text only, never markup)
+  function h(tag, props, ...kids) {
+    const el = document.createElement(tag);
+    if (props) {
+      for (const [k, v] of Object.entries(props)) {
+        if (v == null || v === false) continue;
+        if (k === 'class') el.className = v;
+        else if (k === 'on') for (const [ev, fn] of Object.entries(v)) el.addEventListener(ev, fn);
+        else el.setAttribute(k, v === true ? '' : String(v));
+      }
+    }
+    for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid instanceof Node ? kid : String(kid));
+    return el;
+  }
+  function s(tag, attrs, ...kids) {
+    const el = document.createElementNS(SVG, tag);
+    for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, String(v));
+    for (const kid of kids) el.append(kid instanceof Node ? kid : String(kid));
+    return el;
+  }
+  const td = (text, cls) => h('td', { class: cls }, text == null ? '' : String(text));
+  const tagCell = (text, kind) => h('td', null, h('span', { class: 'tag ' + (kind || '') }, text));
+  function rows(sel, list, build, emptyText) {
+    const body = $(sel + ' tbody');
+    const cols = $$(sel + ' thead th').length;
+    body.replaceChildren();
+    if (!list.length) { body.append(h('tr', { class: 'empty' }, h('td', { colspan: cols }, emptyText || 'nothing here yet.'))); return; }
+    for (const item of list) { const tr = h('tr'); build(item, tr); body.append(tr); }
+  }
+  const TRUST = new Set(['active', 'success', 'on']);
+  const ALARM = new Set(['suspended', 'revoked', 'failed', 'error', 'off']);
+  const kind = (status) => (TRUST.has(status) ? 'trust' : ALARM.has(status) ? 'alarm' : '');
+  const when = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—');
+  const money = (v, places = 4) => '$' + Number(v || 0).toFixed(places);
+  const short = (id) => (id ? String(id).slice(0, 8) : '');
+
+  // ------------------------------------------------------------ messages
+  let toastTimer;
+  function toast(text, tone) {
+    const t = $('#toast');
+    t.textContent = String(text);
+    t.className = 'toast' + (tone ? ' ' + tone : '');
+    t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.hidden = true; }, tone === 'alarm' ? 7000 : 4000);
+  }
+  function ask(title, text, action) {
+    const d = $('#confirm');
+    $('#confirmTitle').textContent = title;
+    $('#confirmText').textContent = text;
+    $('#confirmGo').textContent = action;
+    return new Promise((resolve) => {
+      const done = (ok) => { cleanup(); d.close(); resolve(ok); };
+      const yes = () => done(true);
+      const no = () => done(false);
+      const cancel = (e) => { e.preventDefault(); done(false); };
+      function cleanup() {
+        $('#confirmGo').removeEventListener('click', yes);
+        $('#confirmCancel').removeEventListener('click', no);
+        d.removeEventListener('cancel', cancel);
+      }
+      $('#confirmGo').addEventListener('click', yes);
+      $('#confirmCancel').addEventListener('click', no);
+      d.addEventListener('cancel', cancel);
+      d.showModal();
+      $('#confirmCancel').focus();
+    });
+  }
+
+  // ------------------------------------------------------------ server
+  function errorText(data, status) {
+    const e = data && data.error;
+    if (e && Array.isArray(e.details) && e.details.length) {
+      return e.details.map((d) => ((d.loc || []).slice(1).join('.') + ': ' + d.msg)).join('; ');
+    }
+    if (status === 429) return 'too many attempts. wait a minute and try again.';
+    return String((e && e.message) || ('request failed (' + status + ')'));
+  }
+  async function call(url, method, body) {
+    const init = {
+      method: method || 'GET',
+      headers: { 'X-Admin-Request': '1', 'Accept': 'application/json' },
+      credentials: 'same-origin', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer',
+    };
+    if (body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
+    let res;
+    try { res = await fetch(url, init); } catch (err) { throw new Error('the server could not be reached.'); }
+    const data = await res.json().catch(() => ({}));
+    return { res, data };
+  }
+  async function api(path, method, body) {
+    const { res, data } = await call('/admin/api' + path, method, body);
+    if (res.status === 401) { showLock('your session ended. unlock to continue.'); throw new Locked(); }
+    if (!res.ok) throw new Error(errorText(data, res.status));
+    lastPing = Date.now();
+    return data;
+  }
+  async function guard(fn, btn) {
+    if (btn) btn.disabled = true;
+    try { await fn(); } catch (err) { if (!(err instanceof Locked)) toast(err.message, 'alarm'); } finally { if (btn) btn.disabled = false; }
+  }
+  const formData = (f) => Object.fromEntries(new FormData(f).entries());
+  const submitter = (e) => e.submitter || $('button[type=submit]', e.target);
+
+  // ------------------------------------------------------------ lock, unlock, idle
+  let session = null;
+  let idleMs = 30 * 60000;
+  let lastActive = Date.now();
+  let lastPing = Date.now();
+  let current = null;
+  let meta = null;
   let users = [];
   let selected = null;
 
-  function msg(text, isErr) { const m = $('#msg'); m.textContent = text || ''; m.className = isErr ? 'err' : ''; }
+  function lockMsg(text, alarm) {
+    const m = $('#lockMsg');
+    m.textContent = text ? String(text) : '';
+    m.className = 'lock-msg' + (alarm ? ' alarm' : '');
+  }
+  function wipe() {
+    // Nothing from the last session stays in the page once it locks.
+    hideSecret();
+    $$('#app tbody').forEach((b) => b.replaceChildren());
+    $$('#app form').forEach((f) => f.reset());
+    $('#metrics').replaceChildren(); $('#groups').replaceChildren(); $('#ridgeBody').replaceChildren();
+    ['#heroRevenue', '#heroToday'].forEach((q) => { $(q).textContent = '—'; });
+    ['#providerNote', '#providerList', '#stripeResult', '#userTitle', '#userBalance', '#userFee', '#sessionNote'].forEach((q) => { $(q).textContent = ''; });
+    $('#userBody').hidden = true; $('#userEmpty').hidden = false;
+    meta = null; users = []; selected = null;
+    const d = $('#confirm'); if (d.open) d.close();
+  }
+  function showLock(message, alarm) {
+    session = null;
+    wipe();
+    document.body.classList.add('locked');
+    $('#app').hidden = true;
+    $('#lock').hidden = false;
+    lockMsg(message, alarm);
+    $('#token').focus();
+  }
+  function enter(status) {
+    session = status;
+    idleMs = Math.max(1, status.idle_minutes || 30) * 60000;
+    lastActive = Date.now(); lastPing = Date.now();
+    lockMsg('');
+    document.body.classList.remove('locked');
+    $('#lock').hidden = true;
+    $('#app').hidden = false;
+    $('#beaconText').textContent = 'signed in · locks after ' + Math.round(idleMs / 60000) + ' min idle';
+    go(roomFromHash(), false);
+  }
+  async function signOut(message) {
+    try { await call('/admin/session', 'DELETE'); } catch (err) { /* locking locally still happens */ }
+    showLock(message || 'locked.');
+  }
+  function tick() {
+    if (!session) return;
+    const now = Date.now();
+    if (now - lastActive >= idleMs) { signOut('locked after ' + Math.round(idleMs / 60000) + ' minutes without activity.'); return; }
+    if (now - lastPing > 5 * 60000 && now - lastActive < 60000) {
+      // Someone is reading without clicking anything that calls the server: keep the session alive.
+      lastPing = now;
+      call('/admin/session').then(({ res, data }) => {
+        if (!(res.ok && data.signed_in)) showLock('your session ended. unlock to continue.');
+      }).catch(() => {});
+    }
+  }
+  ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach((ev) => {
+    window.addEventListener(ev, () => { lastActive = Date.now(); }, { passive: true, capture: true });
+  });
+  setInterval(tick, 15000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
 
-  async function api(path, opts = {}) {
-    const res = await fetch('/admin/api' + path, {
-      ...opts,
-      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error((body.error && (body.error.message)) || ('HTTP ' + res.status));
-    return body;
+  $('#unlock').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = $('#token');
+    const token = input.value;
+    input.value = '';
+    if (!token.trim()) { lockMsg('enter the admin token.', true); input.focus(); return; }
+    const btn = submitter(e);
+    btn.disabled = true;
+    lockMsg('checking…');
+    try {
+      const { res, data } = await call('/admin/session', 'POST', { token });
+      if (res.ok && data.signed_in) enter(data);
+      else { lockMsg(errorText(data, res.status), true); input.focus(); }
+    } catch (err) {
+      lockMsg(err.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  $('#lockNow').addEventListener('click', () => signOut('locked.'));
+  $('#lockNow2').addEventListener('click', () => signOut('locked.'));
+
+  // ------------------------------------------------------------ rooms
+  const loaders = {
+    overview: loadOverview, accounts: loadAccounts, domains: loadDomains, pricing: loadPricing,
+    countries: loadCountries, ledger: loadLedger, security: loadSecurity,
+  };
+  function roomFromHash() {
+    const r = location.hash.slice(1);
+    return ROOMS.includes(r) ? r : 'overview';
+  }
+  function go(room, focus) {
+    if (!ROOMS.includes(room)) room = 'overview';
+    if (current !== room) hideSecret();
+    current = room;
+    $$('.room').forEach((sec) => { sec.hidden = sec.dataset.room !== room; });
+    $$('#rooms button').forEach((b) => b.setAttribute('aria-current', b.dataset.room === room ? 'page' : 'false'));
+    if (location.hash.slice(1) !== room) history.replaceState(null, '', '#' + room);
+    if (focus !== false) $('#h-' + room).focus({ preventScroll: true });
+    window.scrollTo(0, 0);
+    return guard(loaders[room]);
+  }
+  $('#rooms').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-room]');
+    if (b && session) go(b.dataset.room);
+  });
+  window.addEventListener('hashchange', () => { if (session && roomFromHash() !== current) go(roomFromHash()); });
+  $('#refresh').addEventListener('click', (e) => guard(loaders[current], e.currentTarget));
+
+  async function ensureMeta() {
+    if (meta) return meta;
+    const [providers, domains] = await Promise.all([api('/providers'), api('/domains')]);
+    providers.sort((a, b) => (b.configured - a.configured) || a.name.localeCompare(b.name));
+    meta = { providers, domains: domains.domains };
+    const keyProvider = $('#keyProvider');
+    const priceProvider = $('#priceProvider');
+    const keyDomain = $('#keyDomain');
+    keyProvider.replaceChildren(h('option', { value: 'any' }, 'any'));
+    priceProvider.replaceChildren(h('option', { value: '*' }, '* every provider'));
+    keyDomain.replaceChildren(h('option', { value: '' }, 'all domains'));
+    for (const d of meta.domains) {
+      keyDomain.append(h('option', { value: d.name }, d.title));
+      priceProvider.append(h('option', { value: d.name }, 'domain · ' + d.title));
+    }
+    for (const p of providers) {
+      const label = p.name + ' · ' + p.country + (p.configured ? '' : ' (no credentials)');
+      keyProvider.append(h('option', { value: p.name }, label));
+      priceProvider.append(h('option', { value: p.name }, label));
+    }
+    return meta;
+  }
+  async function fetchUsers() {
+    users = await api('/users?limit=200');
+    return users;
   }
 
-  function cell(text, cls) {
-    const td = document.createElement('td');
-    if (cls) { const span = document.createElement('span'); span.className = cls; span.textContent = text; td.appendChild(span); }
-    else td.textContent = text == null ? '' : String(text);
-    return td;
-  }
-  function button(label, onClick, cls) {
-    const b = document.createElement('button'); b.type = 'button'; b.textContent = label; if (cls) b.className = cls;
-    b.addEventListener('click', onClick); return b;
-  }
-  function fill(tableSel, rows, build) {
-    const tb = $(tableSel + ' tbody'); tb.replaceChildren();
-    rows.forEach((r) => { const tr = document.createElement('tr'); build(r, tr); tb.appendChild(tr); });
-  }
-  const when = (iso) => iso ? new Date(iso).toLocaleString() : '';
-  const money = (v) => '$' + Number(v).toFixed(4);
-  const pill = (s) => 'pill s-' + s;
-
+  // ------------------------------------------------------------ overview
   async function loadOverview() {
-    const o = await api('/overview');
-    const cards = [
-      ['Users', o.users], ['Active keys', o.active_keys], ['Pending tx', o.pending_transactions],
-      ['Transactions 24h', o.last_24h.transactions], ['AI requests 24h', o.last_24h.requests],
-      ['Revenue 24h', money(o.last_24h.total_revenue)], ['Transactions 30d', o.last_30d.transactions],
-      ['AI requests 30d', o.last_30d.requests], ['Revenue 30d', money(o.last_30d.total_revenue)],
+    const [o, u] = await Promise.all([api('/overview'), api('/usage?days=30')]);
+    $('#heroRevenue').textContent = money(o.last_30d.total_revenue, 2);
+    $('#heroToday').textContent = money(o.last_24h.total_revenue, 2);
+    const metrics = [
+      [o.users, 'accounts'], [o.active_keys, 'active keys'], [o.pending_transactions, 'in flight'],
+      [o.last_24h.transactions, 'transactions · 24h'], [o.last_24h.requests, 'ai requests · 24h'],
+      [o.last_30d.transactions, 'transactions · 30d'], [o.last_30d.requests, 'ai requests · 30d'],
     ];
-    const wrap = $('#cards'); wrap.replaceChildren();
-    cards.forEach(([l, v]) => {
-      const d = document.createElement('div'); d.className = 'card';
-      const vv = document.createElement('div'); vv.className = 'v'; vv.textContent = v;
-      const ll = document.createElement('div'); ll.className = 'l'; ll.textContent = l;
-      d.append(vv, ll); wrap.appendChild(d);
-    });
+    $('#metrics').replaceChildren(...metrics.map(([v, l]) => h('div', { class: 'metric' }, h('div', { class: 'v' }, String(v)), h('div', { class: 'l' }, l))));
+
     const all = Object.entries(o.providers);
-    const live = all.filter(([, p]) => p.configured).map(([n, p]) => n + ' (' + p.country + ')');
-    $('#providers').textContent = 'Providers with credentials: ' + live.length + ' of ' + all.length +
-      (live.length ? ' · ' + live.join(', ') : '') + ' · Stripe ' + (o.stripe_enabled ? 'on' : 'off');
+    const live = all.filter(([, p]) => p.configured);
+    $('#providerNote').textContent = live.length + ' of ' + all.length + ' ai providers have credentials.';
+    $('#providerList').textContent = live.length ? live.map(([n, p]) => n + ' (' + p.country + ')').join(', ') : 'add provider keys as railway variables to switch them on.';
+    const state = $('#stripeState');
+    state.textContent = 'stripe · ' + (o.stripe_enabled ? 'on' : 'off');
+    state.className = 'tag ' + kind(o.stripe_enabled ? 'on' : 'off');
 
-    const u = await api('/usage?days=30');
     const perDay = {};
-    u.daily.forEach((d) => { perDay[d.day] = (perDay[d.day] || 0) + Number(d.revenue); });
+    for (const d of u.daily) perDay[d.day] = (perDay[d.day] || 0) + Number(d.revenue);
     const days = [];
-    for (let i = 29; i >= 0; i--) { const d = new Date(Date.now() - i * 864e5); days.push(d.toISOString().slice(0, 10)); }
-    const max = Math.max(0.000001, ...days.map((d) => perDay[d] || 0));
-    const bars = $('#bars'); bars.replaceChildren();
-    days.forEach((d) => {
-      const b = document.createElement('div'); const v = perDay[d] || 0;
-      b.style.height = (100 * v / max) + '%'; b.title = d + ': ' + money(v); bars.appendChild(b);
+    for (let i = 29; i >= 0; i--) days.push(new Date(Date.now() - i * 864e5).toISOString().slice(0, 10));
+    drawRidge(days, days.map((d) => perDay[d] || 0));
+  }
+  function drawRidge(days, values) {
+    const W = 600, H = 170, top = 14, bottom = 6;
+    const max = Math.max(0, ...values);
+    const x = (i) => (i * W) / (values.length - 1);
+    const y = (v) => H - bottom - (max ? (v / max) * (H - top - bottom) : 0);
+    const line = values.map((v, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1)).join(' ');
+    const body = $('#ridgeBody');
+    body.replaceChildren(
+      s('path', { d: line + ' L' + W + ' ' + H + ' L0 ' + H + ' Z', fill: 'url(#ridgeFill)' }),
+      s('path', { d: line, fill: 'none', stroke: '#ece7f3', 'stroke-width': 1.4, 'stroke-linejoin': 'round', 'vector-effect': 'non-scaling-stroke' }),
+    );
+    const step = W / values.length;
+    values.forEach((v, i) => {
+      body.append(s('rect', { class: 'hit', x: Math.max(0, x(i) - step / 2), y: 0, width: step, height: H }, s('title', {}, days[i] + ' · ' + money(v))));
     });
+    const peak = values.indexOf(max);
+    $('#axisStart').textContent = days[0];
+    $('#axisPeak').textContent = max ? 'peak ' + money(max, 2) + ' on ' + days[peak] : 'no fees yet';
+    $('#ridgeLabel').textContent = 'fees per day over 30 days. ' + (max ? 'peak ' + money(max, 2) + ' on ' + days[peak] + '.' : 'no fees yet.');
   }
+  $('#stripeTest').addEventListener('click', (e) => guard(async () => {
+    const out = $('#stripeResult');
+    out.textContent = 'asking stripe…';
+    const r = await api('/stripe/test-checkout', 'POST');
+    out.replaceChildren();
+    if (!r.ok) { out.textContent = 'stripe said: ' + r.reason; return; }
+    let url = null;
+    try { url = new URL(r.checkout_url); } catch (err) { url = null; }
+    // Only ever link to Stripe's own checkout.
+    if (!url || url.protocol !== 'https:' || url.hostname !== 'checkout.stripe.com') { out.textContent = 'stripe answered, but with an unexpected checkout address.'; return; }
+    out.append('stripe works. ', h('a', { href: url.href, target: '_blank', rel: 'noopener noreferrer' }, 'open the test payment page'), ' — do not pay; it expires by itself.');
+  }, e.currentTarget));
 
-  async function loadProviders() {
-    const list = await api('/providers');
-    list.sort((a, b) => (b.configured - a.configured) || a.name.localeCompare(b.name));
-    const fillSelect = (sel, first) => {
-      const el = $(sel); el.replaceChildren();
-      const head = document.createElement('option'); head.textContent = first; el.appendChild(head);
-      list.forEach((p) => {
-        const opt = document.createElement('option'); opt.value = p.name;
-        opt.textContent = p.name + ' · ' + p.country + (p.configured ? '' : ' (no credentials)');
-        el.appendChild(opt);
-      });
-    };
-    fillSelect('#keyProvider', 'any'); fillSelect('#priceProvider', '*');
+  // ------------------------------------------------------------ accounts
+  async function loadAccounts() {
+    await Promise.all([fetchUsers(), ensureMeta()]);
+    renderUsers();
+    if (selected) await openUser(selected.id);
   }
+  function renderUsers() {
+    rows('#users', users, (u, tr) => {
+      if (selected && selected.id === u.id) tr.className = 'sel';
+      tr.append(td(u.email, 'data'), td(money(u.balance), 'num'), td(u.country || '—'), tagCell(u.status, kind(u.status)),
+        h('td', null, h('button', { type: 'button', class: 'btn small', 'aria-label': 'open ' + u.email, on: { click: () => guard(() => openUser(u.id)) } }, 'open')));
+    }, 'no accounts yet. create the first one above.');
+  }
+  async function openUser(id) {
+    const u = await api('/users/' + encodeURIComponent(id));
+    if (!selected || selected.id !== u.id) hideSecret();
+    selected = u;
+    $('#userEmpty').hidden = true;
+    $('#userBody').hidden = false;
+    $('#userTitle').textContent = u.email;
+    $('#userBalance').textContent = money(u.balance, 2);
+    $('#userFee').textContent = (u.status === 'active' ? 'active' : 'suspended') + ' · ' +
+      (u.country ? 'fees scaled for ' + u.country + ' (see countries).' : 'no country: the full fee applies.');
+    $('#country').elements.country.value = u.country || '';
+    const toggle = $('#toggleStatus');
+    toggle.textContent = u.status === 'active' ? 'suspend account' : 'reactivate account';
+    toggle.className = 'btn' + (u.status === 'active' ? ' warn' : '');
+    rows('#keys', u.keys, (k, tr) => {
+      tr.append(td(k.prefix + '…', 'data'), td(k.name || '—'), td(k.domain || 'all'), td(k.provider), tagCell(k.status, kind(k.status)), td(when(k.last_used_at)));
+      const cell = h('td');
+      if (k.status === 'active') {
+        cell.append(h('button', { type: 'button', class: 'btn warn small', on: { click: (e) => revokeKey(k, e.currentTarget) } }, 'revoke'));
+      }
+      tr.append(cell);
+    }, 'no keys yet.');
+    renderUsers();
+  }
+  async function revokeKey(k, btn) {
+    if (!(await ask('revoke this key?', 'key ' + k.prefix + '… stops working at once. this cannot be undone.', 'revoke key'))) return;
+    await guard(async () => { await api('/keys/' + encodeURIComponent(k.id), 'DELETE'); await openUser(selected.id); toast('key revoked.'); }, btn);
+  }
+  $('#newUser').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const d = formData(e.target);
+    guard(async () => {
+      const body = { email: d.email.trim(), initial_balance: d.initial_balance || '0' };
+      if (d.country.trim()) body.country = d.country.trim();
+      const u = await api('/users', 'POST', body);
+      e.target.reset();
+      await fetchUsers();
+      await openUser(u.id);
+      toast('account created.', 'trust');
+    }, submitter(e));
+  });
+  $('#country').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const d = formData(e.target);
+    guard(async () => {
+      await api('/users/' + encodeURIComponent(selected.id), 'PATCH', { country: d.country.trim() ? d.country.trim() : null });
+      await fetchUsers();
+      await openUser(selected.id);
+      toast('country saved.');
+    }, submitter(e));
+  });
+  $('#credit').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const d = formData(e.target);
+    const btn = submitter(e);
+    if (Number(d.amount) < 0 && !(await ask('take money from this balance?', money(Math.abs(Number(d.amount)), 2) + ' will be removed from ' + selected.email + '.', 'take ' + money(Math.abs(Number(d.amount)), 2)))) return;
+    guard(async () => {
+      await api('/users/' + encodeURIComponent(selected.id) + '/credits', 'POST', { amount: d.amount, note: d.note || null });
+      e.target.reset();
+      await fetchUsers();
+      await openUser(selected.id);
+      toast('balance updated.');
+    }, btn);
+  });
+  $('#newKey').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const d = formData(e.target);
+    guard(async () => {
+      const body = { provider: d.provider || 'any', name: d.name.trim() || null };
+      if (d.domain) body.domain = d.domain;
+      if (d.rate_limit_per_minute) body.rate_limit_per_minute = Number(d.rate_limit_per_minute);
+      const k = await api('/users/' + encodeURIComponent(selected.id) + '/keys', 'POST', body);
+      e.target.reset();
+      await openUser(selected.id);
+      showSecret(k.api_key);
+    }, submitter(e));
+  });
+  $('#toggleStatus').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const suspend = selected.status === 'active';
+    if (suspend && !(await ask('suspend this account?', selected.email + ' and all of its keys stop working until you reactivate it.', 'suspend'))) return;
+    guard(async () => {
+      await api('/users/' + encodeURIComponent(selected.id), 'PATCH', { status: suspend ? 'suspended' : 'active' });
+      await fetchUsers();
+      await openUser(selected.id);
+      toast(suspend ? 'account suspended.' : 'account reactivated.', suspend ? null : 'trust');
+    }, btn);
+  });
 
+  let secretTimer;
+  function showSecret(key) {
+    let left = SECRET_SECONDS;
+    $('#secretValue').textContent = key;
+    $('#secret').hidden = false;
+    $('#secretCount').textContent = 'hides in ' + left + 's';
+    clearInterval(secretTimer);
+    secretTimer = setInterval(() => {
+      left -= 1;
+      if (left <= 0) hideSecret(); else $('#secretCount').textContent = 'hides in ' + left + 's';
+    }, 1000);
+    $('#secretCopy').focus();
+  }
+  function hideSecret() {
+    clearInterval(secretTimer);
+    $('#secretValue').textContent = '';
+    $('#secretCount').textContent = '';
+    $('#secret').hidden = true;
+  }
+  $('#secretHide').addEventListener('click', hideSecret);
+  $('#secretCopy').addEventListener('click', () => {
+    const value = $('#secretValue').textContent;
+    if (!value) return;
+    navigator.clipboard.writeText(value).then(
+      () => toast('copied. store it somewhere safe.', 'trust'),
+      () => toast('copy was blocked. select the key and copy it by hand.', 'alarm'),
+    );
+  });
+
+  // ------------------------------------------------------------ domains
   async function loadDomains() {
     const d = await api('/domains');
-    const keySel = $('#keyDomain'); keySel.replaceChildren();
-    const all = document.createElement('option'); all.value = ''; all.textContent = 'all domains'; keySel.appendChild(all);
-    const priceSel = $('#priceProvider');
-    d.domains.forEach((x) => {
-      const o = document.createElement('option'); o.value = x.name; o.textContent = 'domain: ' + x.title; keySel.appendChild(o);
-      const p = document.createElement('option'); p.value = x.name; p.textContent = 'domain: ' + x.title; priceSel.appendChild(p);
-    });
-    fill('#domains', d.domains, (x, tr) => {
+    rows('#domains', d.domains, (x, tr) => {
       const types = Array.isArray(x.types) ? x.types.join(', ') : 'any';
-      const tx = x.transactions + (x.gateway_requests ? ' + ' + x.gateway_requests + ' gateway' : '');
-      const rev = Number(x.revenue) + Number(x.gateway_revenue || 0);
-      tr.append(cell(x.title), cell(x.examples), cell(types), cell(money(x.base_fee_usd)), cell(x.locked_keys), cell(tx), cell(money(rev)));
+      const tx = x.transactions + (x.gateway_requests ? ' + ' + x.gateway_requests + ' ai' : '');
+      const fees = Number(x.revenue) + Number(x.gateway_revenue || 0);
+      tr.append(td(x.title), td(x.examples, 'wrap'), td(types, 'wrap'), td(money(x.base_fee_usd), 'num'), td(x.locked_keys, 'num'), td(tx, 'num'), td(money(fees), 'num'));
     });
   }
 
-  async function loadUsers() {
-    users = await api('/users?limit=200');
-    fill('#users', users, (u, tr) => {
-      if (selected && selected.id === u.id) tr.className = 'sel';
-      tr.append(cell(u.email), cell(money(u.balance)), cell(u.country || '—'), cell(u.status, pill(u.status)));
-      const td = document.createElement('td'); td.appendChild(button('Open', () => openUser(u.id))); tr.appendChild(td);
-    });
-  }
-
-  async function openUser(id) {
-    selected = await api('/users/' + id);
-    $('#userPanel').classList.remove('hidden');
-    $('#newSecret').classList.add('hidden');
-    $('#userTitle').textContent = selected.email + ' · ' + money(selected.balance);
-    $('#country').elements.country.value = selected.country || '';
-    $('#userFee').textContent = selected.country
-      ? 'Fees adjusted for ' + selected.country + ' (see Fees by country).'
-      : 'No country set: full base fee applies.';
-    $('#toggleStatus').textContent = selected.status === 'active' ? 'Suspend user' : 'Reactivate user';
-    $('#toggleStatus').className = selected.status === 'active' ? 'danger' : '';
-    fill('#keys', selected.keys, (k, tr) => {
-      tr.append(cell(k.prefix + '…'), cell(k.name || ''), cell(k.domain || 'all'), cell(k.provider), cell(k.status, pill(k.status)), cell(when(k.last_used_at)));
-      const td = document.createElement('td');
-      if (k.status === 'active') td.appendChild(button('Revoke', async () => {
-        if (!confirm('Revoke key ' + k.prefix + '…? This cannot be undone.')) return;
-        await guard(async () => { await api('/keys/' + k.id, { method: 'DELETE' }); await openUser(id); });
-      }, 'danger'));
-      tr.appendChild(td);
-    });
-    await loadUsers();
-  }
-
+  // ------------------------------------------------------------ pricing
   async function loadPricing() {
-    const p = await api('/pricing');
-    $('#defaultFee').textContent = 'Fallback when no rule matches: ' + money(p.default_fee_per_request) + ' per request (DEFAULT_FEE_PER_REQUEST).';
-    fill('#rules', p.rules, (r, tr) => {
-      tr.append(cell(r.provider), cell(r.model), cell(money(r.fee_per_request)), cell(money(r.fee_per_1k_tokens)));
-      const td = document.createElement('td');
-      td.appendChild(button('Delete', () => guard(async () => { await api('/pricing/' + r.id, { method: 'DELETE' }); await loadPricing(); }), 'danger'));
-      tr.appendChild(td);
-    });
+    const [p] = await Promise.all([api('/pricing'), ensureMeta()]);
+    $('#defaultFee').textContent = 'the most specific rule wins. with no rule, every request costs ' + money(p.default_fee_per_request) + ' (default_fee_per_request).';
+    rows('#rules', p.rules, (r, tr) => {
+      tr.append(td(r.provider), td(r.model), td(money(r.fee_per_request), 'num'), td(money(r.fee_per_1k_tokens), 'num'),
+        h('td', null, h('button', { type: 'button', class: 'btn warn small', on: { click: (e) => deleteRule(r, e.currentTarget) } }, 'delete')));
+    }, 'no rules: the default fee applies everywhere.');
   }
+  async function deleteRule(r, btn) {
+    if (!(await ask('delete this rule?', r.provider + ' / ' + r.model + ' goes back to the next matching rule or the default fee.', 'delete rule'))) return;
+    await guard(async () => { await api('/pricing/' + encodeURIComponent(r.id), 'DELETE'); await loadPricing(); toast('rule deleted.'); }, btn);
+  }
+  $('#pricing').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const d = formData(e.target);
+    guard(async () => {
+      await api('/pricing', 'PUT', { provider: d.provider, model: d.model.trim() || '*', fee_per_request: d.fee_per_request, fee_per_1k_tokens: d.fee_per_1k_tokens || '0' });
+      await loadPricing();
+      toast('rule saved.', 'trust');
+    }, submitter(e));
+  });
 
+  // ------------------------------------------------------------ countries
   async function loadCountries() {
     const c = await api('/countries');
     const g = c.groups;
-    $('#countrySummary').textContent = 'Base fee ' + money(c.base_fee_usd) + '. By World Bank income group: high ' +
-      money(g.high.fee_usd) + ', upper-middle ' + money(g.upper_middle.fee_usd) + ', lower-middle ' +
-      money(g.lower_middle.fee_usd) + ', low ' + money(g.low.fee_usd) + '. Unknown countries pay the base fee.';
-    fill('#overrides', c.overrides, (o, tr) => {
-      tr.append(cell(o.country), cell(o.default_group), cell(o.multiplier), cell(money(o.fee_usd)));
-      const td = document.createElement('td');
-      td.appendChild(button('Reset', () => guard(async () => { await api('/countries/' + o.country, { method: 'DELETE' }); await loadCountries(); }), 'danger'));
-      tr.appendChild(td);
-    });
+    const groups = [
+      [money(c.base_fee_usd), 'base fee · unknown country'], [money(g.high.fee_usd), 'high income'],
+      [money(g.upper_middle.fee_usd), 'upper-middle income'], [money(g.lower_middle.fee_usd), 'lower-middle income'], [money(g.low.fee_usd), 'low income'],
+    ];
+    $('#groups').replaceChildren(...groups.map(([v, l]) => h('div', { class: 'metric' }, h('div', { class: 'v' }, v), h('div', { class: 'l' }, l))));
+    rows('#overrides', c.overrides, (o, tr) => {
+      tr.append(td(o.country, 'data'), td(String(o.default_group).replace('_', '-')), td(o.multiplier, 'num'), td(money(o.fee_usd), 'num'),
+        h('td', null, h('button', { type: 'button', class: 'btn warn small', on: { click: (e) => resetCountry(o, e.currentTarget) } }, 'reset')));
+    }, 'no overrides: every country follows its income group.');
   }
-
-  async function loadActivity() {
-    const byId = Object.fromEntries(users.map((u) => [u.id, u.email]));
-    const charges = await api('/charges?limit=50');
-    fill('#charges', charges, (t, tr) => tr.append(
-      cell(when(t.created_at)), cell(byId[t.user_id] || t.user_id.slice(0, 8)), cell(t.domain), cell(t.type), cell(t.reference),
-      cell(t.amount != null ? t.amount + ' ' + (t.currency || '') : ''), cell(t.country || ''), cell(money(t.fee.amount_usd))));
-    const txs = await api('/transactions?limit=50');
-    fill('#txs', txs, (t, tr) => tr.append(
-      cell(when(t.timestamp)), cell(byId[t.user_id] || t.user_id.slice(0, 8)), cell(t.provider), cell(t.model_called),
-      cell(t.tokens_used), cell(money(t.fee_charged)), cell(t.status, pill(t.status)), cell(t.latency_ms != null ? t.latency_ms + ' ms' : '')));
-    const audit = await api('/audit?limit=50');
-    fill('#audit', audit, (a, tr) => tr.append(
-      cell(when(a.timestamp)), cell(a.status_code), cell(a.outcome), cell(a.key_prefix), cell(a.client_ip), cell(a.path), cell(a.detail)));
+  async function resetCountry(o, btn) {
+    if (!(await ask('reset ' + o.country + '?', o.country + ' goes back to its income-group fee.', 'reset'))) return;
+    await guard(async () => { await api('/countries/' + encodeURIComponent(o.country), 'DELETE'); await loadCountries(); toast(o.country + ' reset.'); }, btn);
   }
-
-  async function guard(fn) { try { msg(''); await fn(); } catch (e) { msg(e.message, true); } }
-  async function refresh() {
-    await guard(async () => {
-      await loadOverview(); await loadProviders(); await loadDomains(); await loadUsers(); await loadPricing(); await loadCountries(); await loadActivity();
-      $('#app').classList.remove('hidden'); msg('');
-    });
-  }
-  const formData = (f) => Object.fromEntries(new FormData(f).entries());
-
-  $('#login').addEventListener('submit', (e) => {
-    e.preventDefault(); token = $('#token').value.trim(); $('#token').value = '';
-    try { sessionStorage.setItem('adminToken', token); } catch (err) {}
-    refresh();
-  });
-  $('#logout').addEventListener('click', () => {
-    token = ''; try { sessionStorage.removeItem('adminToken'); } catch (err) {}
-    $('#app').classList.add('hidden'); msg('Signed out.');
-  });
-  $('#newUser').addEventListener('submit', (e) => {
-    e.preventDefault(); const d = formData(e.target);
-    guard(async () => {
-      const body = { email: d.email, initial_balance: d.initial_balance || '0' };
-      if (d.country) body.country = d.country;
-      const u = await api('/users', { method: 'POST', body: JSON.stringify(body) });
-      e.target.reset(); await openUser(u.id); await loadOverview();
-    });
-  });
-  $('#stripeTest').addEventListener('click', () => guard(async () => {
-    const out = $('#stripeResult'); out.replaceChildren(); out.textContent = 'Asking Stripe…';
-    const r = await api('/stripe/test-checkout', { method: 'POST' });
-    out.replaceChildren();
-    if (r.ok) {
-      out.append('Stripe works. ');
-      const a = document.createElement('a'); a.href = r.checkout_url; a.target = '_blank'; a.rel = 'noopener noreferrer';
-      a.textContent = 'Open the test payment page'; out.appendChild(a);
-      out.append(' (do not pay; it expires by itself).');
-    } else {
-      out.textContent = 'Stripe said: ' + r.reason;
-    }
-  }));
-  $('#country').addEventListener('submit', (e) => {
-    e.preventDefault(); const d = formData(e.target);
-    guard(async () => {
-      await api('/users/' + selected.id, { method: 'PATCH', body: JSON.stringify({ country: d.country ? d.country : null }) });
-      await openUser(selected.id);
-    });
-  });
   $('#countryOverride').addEventListener('submit', (e) => {
-    e.preventDefault(); const d = formData(e.target);
+    e.preventDefault();
+    const d = formData(e.target);
     guard(async () => {
-      await api('/countries/' + encodeURIComponent(d.country.trim()), { method: 'PUT', body: JSON.stringify({ multiplier: d.multiplier }) });
-      e.target.reset(); await loadCountries();
-    });
-  });
-  $('#credit').addEventListener('submit', (e) => {
-    e.preventDefault(); const d = formData(e.target);
-    guard(async () => {
-      await api('/users/' + selected.id + '/credits', { method: 'POST', body: JSON.stringify({ amount: d.amount, note: d.note || null }) });
-      e.target.reset(); await openUser(selected.id);
-    });
-  });
-  $('#newKey').addEventListener('submit', (e) => {
-    e.preventDefault(); const d = formData(e.target);
-    guard(async () => {
-      const body = { provider: d.provider, name: d.name || null };
-      if (d.domain) body.domain = d.domain;
-      if (d.rate_limit_per_minute) body.rate_limit_per_minute = Number(d.rate_limit_per_minute);
-      const k = await api('/users/' + selected.id + '/keys', { method: 'POST', body: JSON.stringify(body) });
-      await openUser(selected.id);
-      const box = $('#newSecret'); box.textContent = 'New key (shown once, copy it now): ' + k.api_key; box.classList.remove('hidden');
+      await api('/countries/' + encodeURIComponent(d.country.trim()), 'PUT', { multiplier: d.multiplier });
       e.target.reset();
-    });
-  });
-  $('#toggleStatus').addEventListener('click', () => guard(async () => {
-    const status = selected.status === 'active' ? 'suspended' : 'active';
-    await api('/users/' + selected.id, { method: 'PATCH', body: JSON.stringify({ status }) });
-    await openUser(selected.id);
-  }));
-  $('#pricing').addEventListener('submit', (e) => {
-    e.preventDefault(); const d = formData(e.target);
-    guard(async () => {
-      await api('/pricing', { method: 'PUT', body: JSON.stringify({
-        provider: d.provider, model: d.model || '*', fee_per_request: d.fee_per_request, fee_per_1k_tokens: d.fee_per_1k_tokens || '0' }) });
-      await loadPricing();
-    });
+      await loadCountries();
+      toast('override saved.', 'trust');
+    }, submitter(e));
   });
 
-  if (token) refresh(); else msg('Enter the admin token to load the dashboard.');
+  // ------------------------------------------------------------ ledger
+  async function loadLedger() {
+    const [, charges, txs, audit] = await Promise.all([fetchUsers(), api('/charges?limit=50'), api('/transactions?limit=50'), api('/audit?limit=50')]);
+    const email = Object.fromEntries(users.map((u) => [u.id, u.email]));
+    rows('#charges', charges, (t, tr) => tr.append(
+      td(when(t.created_at)), td(email[t.user_id] || short(t.user_id), 'data'), td(t.domain), td(t.type), td(t.reference, 'data ellipsis'),
+      td(t.amount != null ? t.amount + ' ' + (t.currency || '') : '—', 'num'), td(t.country || '—'), td(money(t.fee.amount_usd), 'num')));
+    rows('#txs', txs, (t, tr) => tr.append(
+      td(when(t.timestamp)), td(email[t.user_id] || short(t.user_id), 'data'), td(t.provider), td(t.model_called, 'data'),
+      td(t.tokens_used, 'num'), td(money(t.fee_charged), 'num'), tagCell(t.status, kind(t.status)), td(t.latency_ms != null ? t.latency_ms + ' ms' : '—', 'num')));
+    rows('#audit', audit, (a, tr) => tr.append(
+      td(when(a.timestamp)), td(a.status_code, 'num'), td(String(a.outcome).replace(/_/g, ' ')), td(a.key_prefix || '—', 'data'), td(a.client_ip || '—', 'data'),
+      td(a.path, 'data'), td(a.detail || '', 'data ellipsis')), 'nothing turned away.');
+  }
+
+  // ------------------------------------------------------------ security
+  function browserName(ua) {
+    if (!ua) return 'unknown';
+    const b = /Edg\//.test(ua) ? 'edge' : /OPR\//.test(ua) ? 'opera' : /Firefox\//.test(ua) ? 'firefox' : /Chrome\//.test(ua) ? 'chrome' : /Safari\//.test(ua) ? 'safari' : 'other';
+    const os = /iPhone|iPad/.test(ua) ? 'ios' : /Android/.test(ua) ? 'android' : /Mac OS X/.test(ua) ? 'macos' : /Windows/.test(ua) ? 'windows' : /Linux/.test(ua) ? 'linux' : '';
+    return b + (os ? ' · ' + os : '');
+  }
+  async function loadSecurity() {
+    const list = await api('/sessions');
+    const idle = Math.round(idleMs / 60000);
+    $('#sessionNote').textContent = list.length + (list.length === 1 ? ' browser is' : ' browsers are') + ' signed in. sessions lock after ' + idle + ' minutes without activity.';
+    $('#idleLine').textContent = 'sessions lock after ' + idle + ' minutes without activity, end within hours at most, and die when the browser changes.';
+    rows('#sessions', list, (x, tr) => {
+      tr.append(td(when(x.created_at)), td(when(x.last_seen_at)), td(when(x.expires_at)), td(x.ip || '—', 'data'), td(browserName(x.user_agent)),
+        x.current ? tagCell('this browser', 'trust') : td(''));
+    });
+  }
+  $('#endAll').addEventListener('click', async (e) => {
+    if (!(await ask('sign out every browser?', 'every dashboard session ends now, including this one. scripts using the admin token keep working.', 'sign out all'))) return;
+    await guard(async () => {
+      await api('/sessions/end-all', 'POST');
+      showLock('every session has ended.');
+    }, e.currentTarget);
+  });
+
+  // ------------------------------------------------------------ start
+  (async () => {
+    try {
+      const { res, data } = await call('/admin/session');
+      if (res.ok && data.signed_in) enter(data);
+      else showLock(res.status === 503 ? errorText(data, res.status) : '', res.status === 503);
+    } catch (err) {
+      showLock(err.message, true);
+    }
+  })();
 })();
 </script>
 </body>

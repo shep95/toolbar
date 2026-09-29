@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     # Optional comma-separated IPs/CIDRs allowed to reach /admin at all.
     admin_allowed_ips: str = ""
     admin_auth_failures_per_minute_per_ip: int = 10
+    # Hostnames the admin area answers on (comma-separated). Empty: the
+    # Railway domain in RAILWAY_PUBLIC_DOMAIN if set, otherwise any host.
+    admin_allowed_hosts: str = ""
+    # Dashboard sessions end after this much inactivity, and at the latest
+    # this long after sign-in.
+    admin_session_idle_minutes: int = 30
+    admin_session_max_hours: int = 12
+    admin_max_sessions: int = 20
 
     # --- upstream -----------------------------------------------------------
     # The three original providers keep explicit fields; every other provider

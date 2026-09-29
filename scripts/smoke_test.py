@@ -93,7 +93,17 @@ def main() -> int:
         overview = r.json()
         configured = sorted(n for n, p in overview["providers"].items() if p["configured"])
         check("providers with credentials", bool(configured), ", ".join(configured) or "none: set <NAME>_API_KEY variables")
-        check("dashboard page served", c.get("/admin").status_code == 200)
+        page = c.get("/admin")
+        check("dashboard page served", page.status_code == 200)
+        check(
+            "dashboard locked down (hash-pinned CSP, trusted types, isolation)",
+            "trusted-types 'none'" in page.headers.get("content-security-policy", "")
+            and page.headers.get("cross-origin-opener-policy") == "same-origin",
+        )
+        r = c.get("/admin/session")
+        check("dashboard starts signed out", r.status_code == 200 and r.json().get("signed_in") is False, f"HTTP {r.status_code}")
+        r = c.post("/admin/session", json={"token": "x"}, headers={"Origin": "https://evil.example", "X-Admin-Request": "1"})
+        check("cross-site dashboard sign-in refused", r.status_code == 403, f"HTTP {r.status_code}")
 
         # --- keys and rejections ---------------------------------------------
         stamp = int(time.time())

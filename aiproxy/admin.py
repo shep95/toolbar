@@ -1,6 +1,7 @@
 """Admin layer: accounts, keys, pricing, usage and audit views.
 
-Authenticated with ``ADMIN_API_TOKEN`` (``Authorization: Bearer <token>``),
+Authenticated with ``ADMIN_API_TOKEN`` (``Authorization: Bearer <token>``) or,
+from the dashboard, a server-side session cookie (see admin_session). Both are
 completely separate from user API keys: a user key can never reach these
 routes and the admin token can never be used to proxy traffic.
 Upstream provider credentials live in environment variables only, so the admin
@@ -21,11 +22,12 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import case, func, select, update
 from sqlalchemy.exc import IntegrityError
 
+from . import admin_session
 from .domains import DEFAULT_DOMAIN, DOMAINS, pricing_key
 from .countries import (
     DEFAULT_MULTIPLIERS,
@@ -87,17 +89,30 @@ def _check_admin_ip(request: Request, services: Services) -> str:
     return ip
 
 
-def require_admin(request: Request) -> Services:
+async def require_admin(request: Request) -> Services:
+    """Admin auth: ``Authorization: Bearer <ADMIN_API_TOKEN>`` for scripts, or
+    the dashboard's session cookie (see admin_session)."""
     services = get_services(request)
     settings = services.settings
     ip = _check_admin_ip(request, services)
+    admin_session.check_host(request, services)
     if not settings.admin_enabled:
         raise HTTPException(503, "admin API disabled: set ADMIN_API_TOKEN (at least 32 characters)")
     limited, retry_after = services.admin_failure_limiter.is_limited(ip, settings.admin_auth_failures_per_minute_per_ip)
     if limited:
         raise HTTPException(429, "too many failed admin logins", headers={"Retry-After": str(retry_after)})
-    auth = request.headers.get("authorization", "")
-    scheme, _, token = auth.partition(" ")
+    auth = request.headers.get("authorization")
+    if auth is None and admin_session.COOKIE in request.cookies:
+        row = await admin_session.load_session(services, request)
+        if row is None:
+            # Session IDs are 256-bit random: an expired one is not a guess,
+            # so it does not count towards the lockout.
+            raise HTTPException(401, "session ended, sign in again")
+        if request.method not in admin_session.SAFE_METHODS:
+            admin_session.check_same_origin(request)
+        request.state.admin_session = row
+        return services
+    scheme, _, token = (auth or "").partition(" ")
     if scheme.lower() != "bearer" or not constant_time_equals(
         token.strip(), settings.admin_api_token.get_secret_value()
     ):
@@ -837,27 +852,63 @@ async def reconcile(services: Services = Depends(require_admin)):
     return {"reconciled": count}
 
 
+@api.get("/sessions")
+async def sessions(request: Request, services: Services = Depends(require_admin)):
+    """Signed-in dashboard sessions (IP, browser, when they end)."""
+    return await admin_session.list_sessions(services, getattr(request.state, "admin_session", None))
+
+
+@api.post("/sessions/end-all")
+async def end_all_sessions(services: Services = Depends(require_admin)):
+    """Sign every dashboard out, including the one making this call."""
+    ended = await admin_session.end_all_sessions(services)
+    log.warning("all admin sessions ended", extra={"event": "admin_sessions_ended", "count": ended})
+    response = JSONResponse({"ended": ended})
+    admin_session.clear_cookie(response)
+    return response
+
+
 # ---------------------------------------------------------------- dashboard page
 
 _DASHBOARD_HTML = (Path(__file__).parent / "static" / "admin.html").read_text(encoding="utf-8")
-_SCRIPTS = re.findall(r"<script>(.*?)</script>", _DASHBOARD_HTML, flags=re.S)
-# Only the page's own inline script may run (pinned by hash), so injected
-# markup can never execute script even if it got into the page.
-_SCRIPT_HASHES = " ".join(
-    "'sha256-" + base64.b64encode(hashlib.sha256(code.encode("utf-8")).digest()).decode() + "'" for code in _SCRIPTS
-)
+
+
+def _hashes(tag: str) -> str:
+    blocks = re.findall(rf"<{tag}>(.*?)</{tag}>", _DASHBOARD_HTML, flags=re.S)
+    return " ".join(
+        "'sha256-" + base64.b64encode(hashlib.sha256(code.encode("utf-8")).digest()).decode() + "'" for code in blocks
+    )
+
+
+# Only the page's own inline script and stylesheet may apply (pinned by hash),
+# and Trusted Types forbids turning strings into markup or code, so injected
+# text can never become script, style or an element.
 _DASHBOARD_CSP = (
-    f"default-src 'none'; script-src {_SCRIPT_HASHES}; style-src 'unsafe-inline'; connect-src 'self'; "
-    "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    f"default-src 'none'; script-src {_hashes('script')}; style-src {_hashes('style')}; connect-src 'self'; "
+    "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; "
+    "require-trusted-types-for 'script'; trusted-types 'none'"
 )
+_DASHBOARD_HEADERS = {
+    "Content-Security-Policy": _DASHBOARD_CSP,
+    "Cache-Control": "no-store",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Embedder-Policy": "require-corp",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Permissions-Policy": (
+        "accelerometer=(), autoplay=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), "
+        "microphone=(), midi=(), payment=(), usb=(), serial=(), hid=(), "
+        "clipboard-read=(), clipboard-write=(self)"
+    ),
+    "X-Robots-Tag": "noindex, nofollow, noarchive",
+    "X-Permitted-Cross-Domain-Policies": "none",
+}
 
 
 @pages.get("/admin", response_class=HTMLResponse, include_in_schema=False)
 async def dashboard(request: Request) -> HTMLResponse:
-    # The page itself holds no data; it calls /admin/api with the token the
-    # operator types in, so it is safe to serve without auth.
-    _check_admin_ip(request, get_services(request))
-    return HTMLResponse(
-        _DASHBOARD_HTML,
-        headers={"Content-Security-Policy": _DASHBOARD_CSP, "Cache-Control": "no-store"},
-    )
+    # The page itself holds no data; it signs in with the token the operator
+    # types and then works through an HttpOnly session cookie.
+    services = get_services(request)
+    _check_admin_ip(request, services)
+    admin_session.check_host(request, services)
+    return HTMLResponse(_DASHBOARD_HTML, headers=_DASHBOARD_HEADERS)

@@ -240,3 +240,16 @@ class CountryPricing(Base):
     country: Mapped[str] = mapped_column(String(2), primary_key=True)
     multiplier: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class AdminSession(Base):
+    """A signed-in dashboard session. Only a hash of the session ID is stored."""
+
+    __tablename__ = "admin_sessions"
+
+    id_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ip: Mapped[str | None] = mapped_column(String(64))
+    user_agent: Mapped[str | None] = mapped_column(String(200))
