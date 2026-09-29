@@ -29,6 +29,7 @@ class FakeUpstream:
     def __init__(self) -> None:
         self.requests: list[httpx.Request] = []
         self.handlers: dict[str, Callable[[httpx.Request], httpx.Response]] = {}
+        self.default: Callable[[httpx.Request], httpx.Response] | None = None
 
     def on(self, path: str, handler: Callable[[httpx.Request], httpx.Response] | httpx.Response) -> None:
         self.handlers[path] = handler if callable(handler) else (lambda request, r=handler: r)
@@ -38,7 +39,7 @@ class FakeUpstream:
 
     async def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
-        handler = self.handlers.get(request.url.path)
+        handler = self.handlers.get(request.url.path) or self.default
         if handler is None:
             return httpx.Response(404, json={"error": "no fake handler for " + request.url.path})
         result = handler(request)

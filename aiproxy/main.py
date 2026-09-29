@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib.util
 import logging
 import socket
+import ssl
 from contextlib import asynccontextmanager
 from datetime import timedelta
 
@@ -27,7 +29,7 @@ from .config import Settings, get_settings
 from .connectors import build_connectors
 from .db import DB_UNAVAILABLE_ERRORS, Database
 from .logging_setup import configure_logging
-from .ratelimit import RateLimiter
+from .keycache import AuthCache
 from .services import Services
 
 log = logging.getLogger("aiproxy")
@@ -62,26 +64,68 @@ class HttpsOnlyMiddleware:
 
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
-                extra = [(b"x-content-type-options", b"nosniff")]
+                headers = list(message.get("headers") or [])
+                present = {name.lower() for name, _ in headers}
+                extra = [
+                    (b"x-content-type-options", b"nosniff"),
+                    (b"x-frame-options", b"DENY"),
+                    (b"referrer-policy", b"no-referrer"),
+                ]
+                # API responses carry balances and model output: never cache them,
+                # never render them as a page.
+                if b"cache-control" not in present:
+                    extra.append((b"cache-control", b"no-store"))
+                if b"content-security-policy" not in present:
+                    extra.append((b"content-security-policy", b"default-src 'none'; frame-ancestors 'none'"))
                 if self.enabled:
                     extra.append((b"strict-transport-security", b"max-age=31536000; includeSubDomains"))
-                message["headers"] = list(message.get("headers") or []) + extra
+                message["headers"] = headers + extra
             await send(message)
 
         await self.app(scope, receive, send_with_headers)
 
 
-async def _reconcile_forever(services: Services) -> None:
-    interval = services.settings.reconcile_interval_seconds
+async def _maintenance_forever(services: Services) -> None:
+    """Flush batched key-usage timestamps and refund abandoned transactions."""
+    tick = 10
+    reconcile_every = max(1, services.settings.reconcile_interval_seconds // tick)
     timeout = timedelta(minutes=services.settings.pending_timeout_minutes)
+    ticks = 0
     while True:
-        await asyncio.sleep(interval)
+        await asyncio.sleep(tick)
+        ticks += 1
         try:
-            await services.billing.reconcile_stale(timeout)
+            await services.key_usage.flush(services.db)
+            if ticks % reconcile_every == 0:
+                await services.billing.reconcile_stale(timeout)
         except DB_UNAVAILABLE_ERRORS:
-            log.warning("reconciler skipped: database unavailable")
+            log.warning("maintenance skipped: database unavailable")
         except Exception:  # keep the loop alive no matter what
-            log.exception("reconciler failed")
+            log.exception("maintenance failed")
+
+
+def build_http_client(settings: Settings) -> httpx.AsyncClient:
+    """One shared client: pooled, kept-alive connections so each provider call
+    skips DNS and TLS handshakes, and HTTP/2 multiplexing where supported."""
+    verify: bool | ssl.SSLContext = True
+    if settings.upstream_extra_ca_file:
+        import certifi
+
+        context = ssl.create_default_context(cafile=certifi.where())
+        context.load_verify_locations(settings.upstream_extra_ca_file)
+        verify = context
+    http2 = settings.upstream_http2 and importlib.util.find_spec("h2") is not None
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(settings.upstream_timeout_seconds, connect=settings.upstream_connect_timeout_seconds),
+        follow_redirects=False,
+        http2=http2,
+        verify=verify,
+        limits=httpx.Limits(
+            max_connections=settings.upstream_max_connections,
+            max_keepalive_connections=settings.upstream_max_connections,
+            keepalive_expiry=settings.upstream_keepalive_seconds,
+        ),
+    )
 
 
 def create_app(
@@ -96,25 +140,25 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        connectors = build_connectors(settings)  # fails fast on bad provider config
         db = database or Database.from_settings(settings)
-        http = http_client or httpx.AsyncClient(
-            timeout=httpx.Timeout(settings.upstream_timeout_seconds, connect=settings.upstream_connect_timeout_seconds),
-            follow_redirects=False,
-            limits=httpx.Limits(max_connections=200, max_keepalive_connections=50),
-        )
+        http = http_client or build_http_client(settings)
         services = Services(
             settings=settings,
             db=db,
-            billing=BillingEngine(db, settings.default_fee_per_request),
-            limiter=RateLimiter(),
-            auth_failure_limiter=RateLimiter(),
-            connectors=build_connectors(settings),
+            billing=BillingEngine(db, settings.default_fee_per_request, settings.pricing_cache_seconds),
+            connectors=connectors,
             http=http,
+            auth_cache=AuthCache(settings.auth_cache_seconds),
         )
         app.state.services = services
         configured = [name for name, c in services.connectors.items() if c.configured]
-        log.info("starting", extra={"event": "startup", "providers_configured": configured, "admin_enabled": settings.admin_enabled})
-        task = asyncio.create_task(_reconcile_forever(services)) if run_reconciler else None
+        log.info(
+            "starting",
+            extra={"event": "startup", "providers_configured": configured, "providers_available": len(connectors),
+                   "admin_enabled": settings.admin_enabled},
+        )
+        task = asyncio.create_task(_maintenance_forever(services)) if run_reconciler else None
         try:
             yield
         finally:
@@ -122,6 +166,8 @@ def create_app(
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+            with contextlib.suppress(*DB_UNAVAILABLE_ERRORS):
+                await services.key_usage.flush(db)
             if http_client is None:
                 await http.aclose()
             if database is None:
@@ -129,9 +175,11 @@ def create_app(
 
     app = FastAPI(
         title="AI API Proxy",
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
-        docs_url="/docs",
+        # Off by default: the schema maps every admin route for an attacker.
+        docs_url="/docs" if settings.enable_docs else None,
+        openapi_url="/openapi.json" if settings.enable_docs else None,
         redoc_url=None,
     )
 

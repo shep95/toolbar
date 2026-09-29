@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
+<link rel="icon" href="data:,">
 <title>Proxy Admin</title>
 <style>
   :root {
@@ -58,7 +59,7 @@
 <header>
   <h1>AI API Proxy · Admin</h1>
   <form id="login" autocomplete="off">
-    <input id="token" type="password" placeholder="Admin token" aria-label="Admin token">
+    <input id="token" type="password" placeholder="Admin token" aria-label="Admin token" autocomplete="new-password">
     <button class="primary">Connect</button>
     <button type="button" id="logout">Sign out</button>
   </form>
@@ -93,7 +94,7 @@
           <button>Adjust balance</button>
         </form>
         <form id="newKey">
-          <select name="provider" aria-label="provider"><option>any</option><option>openai</option><option>anthropic</option><option>mistral</option></select>
+          <select name="provider" aria-label="provider" id="keyProvider"><option>any</option></select>
           <input name="name" placeholder="key label">
           <input name="rate_limit_per_minute" type="number" min="1" placeholder="req/min (default)">
           <button class="primary">Issue key</button>
@@ -108,7 +109,7 @@
       <h2>Pricing</h2>
       <p class="muted" id="defaultFee"></p>
       <form id="pricing">
-        <select name="provider" aria-label="provider"><option>*</option><option>openai</option><option>anthropic</option><option>mistral</option></select>
+        <select name="provider" aria-label="provider" id="priceProvider"><option>*</option></select>
         <input name="model" placeholder="model (* = all)" value="*">
         <input name="fee_per_request" type="number" step="0.000001" min="0" placeholder="$ per request" required>
         <input name="fee_per_1k_tokens" type="number" step="0.000001" min="0" placeholder="$ per 1k tokens" value="0">
@@ -180,9 +181,10 @@
       const ll = document.createElement('div'); ll.className = 'l'; ll.textContent = l;
       d.append(vv, ll); wrap.appendChild(d);
     });
-    $('#providers').textContent = 'Providers: ' + Object.entries(o.providers)
-      .map(([n, p]) => n + (p.configured ? ' ✓' : ' (no credentials)')).join(' · ') +
-      ' · Stripe ' + (o.stripe_enabled ? 'on' : 'off');
+    const all = Object.entries(o.providers);
+    const live = all.filter(([, p]) => p.configured).map(([n, p]) => n + ' (' + p.country + ')');
+    $('#providers').textContent = 'Providers with credentials: ' + live.length + ' of ' + all.length +
+      (live.length ? ' · ' + live.join(', ') : '') + ' · Stripe ' + (o.stripe_enabled ? 'on' : 'off');
 
     const u = await api('/usage?days=30');
     const perDay = {};
@@ -195,6 +197,21 @@
       const b = document.createElement('div'); const v = perDay[d] || 0;
       b.style.height = (100 * v / max) + '%'; b.title = d + ': ' + money(v); bars.appendChild(b);
     });
+  }
+
+  async function loadProviders() {
+    const list = await api('/providers');
+    list.sort((a, b) => (b.configured - a.configured) || a.name.localeCompare(b.name));
+    const fillSelect = (sel, first) => {
+      const el = $(sel); el.replaceChildren();
+      const head = document.createElement('option'); head.textContent = first; el.appendChild(head);
+      list.forEach((p) => {
+        const opt = document.createElement('option'); opt.value = p.name;
+        opt.textContent = p.name + ' · ' + p.country + (p.configured ? '' : ' (no credentials)');
+        el.appendChild(opt);
+      });
+    };
+    fillSelect('#keyProvider', 'any'); fillSelect('#priceProvider', '*');
   }
 
   async function loadUsers() {
@@ -250,7 +267,7 @@
   async function guard(fn) { try { msg(''); await fn(); } catch (e) { msg(e.message, true); } }
   async function refresh() {
     await guard(async () => {
-      await loadOverview(); await loadUsers(); await loadPricing(); await loadActivity();
+      await loadOverview(); await loadProviders(); await loadUsers(); await loadPricing(); await loadActivity();
       $('#app').classList.remove('hidden'); msg('');
     });
   }

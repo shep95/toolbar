@@ -16,14 +16,50 @@ Two ways in:
 
 from __future__ import annotations
 
-import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
+import orjson
+
 
 class UnsupportedRequest(ValueError):
     """The request cannot be expressed for this provider. Maps to HTTP 400."""
+
+
+class StreamTooLarge(ValueError):
+    """An upstream SSE event grew past the safety limit."""
+
+
+# --------------------------------------------------------------------- secrets
+
+_SECRET_PATTERNS = (
+    (re.compile(rb"\borg-[A-Za-z0-9]{8,}"), b"org-***"),
+    (re.compile(rb"\bproj_[A-Za-z0-9]{8,}"), b"proj_***"),
+    (re.compile(rb"\bsk-[A-Za-z0-9_\-*]{8,}"), b"sk-***"),
+    (re.compile(rb"\bbce-v3/[A-Za-z0-9_\-/]{8,}"), b"bce-v3/***"),
+    (re.compile(rb"(?i)(api[_ -]?key[\"'=: ]{1,4})[A-Za-z0-9_\-.]{12,}"), rb"\1***"),
+)
+
+
+def scrub(content: bytes, *secrets: str | None) -> bytes:
+    """Remove operator identifiers and credentials from a provider error body.
+
+    Provider errors can name the operator's organisation or echo part of the
+    key (e.g. "Rate limit reached for organization org-abc..."). Only error
+    bodies are scrubbed, never model output.
+    """
+    for secret in secrets:
+        if secret and len(secret) >= 8:
+            content = content.replace(secret.encode(), b"***")
+    for pattern, replacement in _SECRET_PATTERNS:
+        content = pattern.sub(replacement, content)
+    return content
+
+
+# --------------------------------------------------------------------- data
 
 
 @dataclass
@@ -57,17 +93,23 @@ class SSEEvent:
 class SSEParser:
     """Incremental server-sent-events parser. Feed raw bytes, get whole events."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_event_bytes: int = 8_000_000) -> None:
         self._buffer = ""
+        self._max = max_event_bytes
 
     def feed(self, chunk: bytes) -> list[SSEEvent]:
-        self._buffer += chunk.decode("utf-8", errors="replace").replace("\r\n", "\n")
+        text = chunk.decode("utf-8", errors="replace")
+        if "\r" in text:
+            text = text.replace("\r\n", "\n")
+        self._buffer += text
         events: list[SSEEvent] = []
         while "\n\n" in self._buffer:
             block, self._buffer = self._buffer.split("\n\n", 1)
             event = self._parse_block(block)
             if event is not None:
                 events.append(event)
+        if len(self._buffer) > self._max:
+            raise StreamTooLarge("upstream event exceeded the size limit")
         return events
 
     def flush(self) -> list[SSEEvent]:
@@ -94,9 +136,15 @@ class SSEParser:
         return SSEEvent(event=name, data="\n".join(data_lines))
 
 
-def sse(data: str, event: str | None = None) -> bytes:
-    prefix = f"event: {event}\n" if event else ""
-    return f"{prefix}data: {data}\n\n".encode("utf-8")
+def sse(data: str | bytes, event: str | None = None) -> bytes:
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    prefix = f"event: {event}\n".encode() if event else b""
+    return prefix + b"data: " + data + b"\n\n"
+
+
+def dumps(value: Any) -> bytes:
+    return orjson.dumps(value)
 
 
 def usage_from_dict(usage: Any) -> Usage:
@@ -121,6 +169,21 @@ def usage_from_dict(usage: Any) -> Usage:
     return Usage(input_tokens=input_tokens, output_tokens=output_tokens, total_tokens=as_int(usage.get("total_tokens")))
 
 
+def usage_from_payload(payload: dict[str, Any]) -> Usage:
+    """Usage from a response or stream chunk, wherever the provider put it."""
+    usage = payload.get("usage")
+    if not usage and isinstance(payload.get("response"), dict):
+        usage = payload["response"].get("usage")  # OpenAI Responses API
+    if not usage:
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            usage = choices[0].get("usage")  # Moonshot/Kimi streams
+    return usage_from_dict(usage)
+
+
+# --------------------------------------------------------------------- streams
+
+
 @dataclass
 class StreamState:
     usage: Usage = field(default_factory=Usage)
@@ -133,11 +196,13 @@ class StreamHandler:
 
     ``handle`` returns the bytes to send to the client for one event. Native
     passthrough handlers re-emit each event unchanged; unified handlers
-    translate it. ``finish`` returns any trailing bytes.
+    translate it. ``finish`` returns any trailing bytes. Error events are
+    scrubbed of operator identifiers before they reach the client.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, secrets: tuple[str | None, ...] = ()) -> None:
         self.state = StreamState()
+        self.secrets = secrets
 
     def handle(self, event: SSEEvent) -> bytes:
         raise NotImplementedError
@@ -147,32 +212,31 @@ class StreamHandler:
 
 
 class OpenAIStyleStreamHandler(StreamHandler):
-    """For OpenAI and Mistral chat streams (``data: {json}`` ... ``data: [DONE]``)."""
+    """For OpenAI-compatible chat streams (``data: {json}`` ... ``data: [DONE]``)."""
 
-    def __init__(self, drop_usage_only_chunks: bool = False, model_prefix: str | None = None) -> None:
-        super().__init__()
+    def __init__(self, drop_usage_only_chunks: bool = False, secrets: tuple[str | None, ...] = ()) -> None:
+        super().__init__(secrets)
         self.drop_usage_only_chunks = drop_usage_only_chunks
-        self.model_prefix = model_prefix
 
     def handle(self, event: SSEEvent) -> bytes:
         if event.data == "[DONE]":
-            return sse("[DONE]")
+            return sse(b"[DONE]", event.event)
         try:
-            payload = json.loads(event.data)
-        except ValueError:
+            payload = orjson.loads(event.data)
+        except orjson.JSONDecodeError:
             return sse(event.data, event.event)
         if not isinstance(payload, dict):
             return sse(event.data, event.event)
-        if payload.get("error"):
-            self.state.error = json.dumps(payload["error"])[:500]
-        if payload.get("model"):
-            self.state.model = payload["model"]
-        # Responses API wraps usage inside `response`.
-        usage = payload.get("usage") or (payload.get("response") or {}).get("usage")
-        if usage:
-            parsed = usage_from_dict(usage)
-            if parsed.total is not None:
-                self.state.usage = parsed
+        error = payload.get("error") or (payload.get("type") == "error" and payload)
+        if error:
+            self.state.error = orjson.dumps(error)[:500].decode("utf-8", errors="replace")
+            return sse(scrub(event.data.encode(), *self.secrets), event.event)
+        model = payload.get("model")
+        if model:
+            self.state.model = model
+        parsed = usage_from_payload(payload)
+        if parsed.total is not None:
+            self.state.usage = parsed
         if self.drop_usage_only_chunks and payload.get("usage") and not payload.get("choices"):
             return b""
         return sse(event.data, event.event)
@@ -201,12 +265,23 @@ def openai_chat_completion(
     }
 
 
+# --------------------------------------------------------------------- connector
+
+
 class Connector:
     """Base class. Subclasses fill in the provider specifics."""
 
     name: str = ""
-    # Paths (relative to the provider's /v1) clients may call natively.
+    display_name: str = ""
+    country: str = ""
+    verified: bool = True
+    # Paths (relative to the provider's base URL) clients may POST natively.
     native_paths: frozenset[str] = frozenset()
+    # Whether GET <base>/models lists the provider's models.
+    lists_models: bool = False
+    # True when the unified response is already OpenAI-shaped, so the original
+    # bytes can be returned without re-serialising.
+    unified_response_is_native: bool = False
 
     def __init__(self, base_url: str, api_key: str | None) -> None:
         self.base_url = base_url.rstrip("/")
@@ -216,12 +291,28 @@ class Connector:
     def configured(self) -> bool:
         return bool(self._api_key)
 
+    @property
+    def secrets(self) -> tuple[str | None, ...]:
+        return (self._api_key,)
+
     def url(self, path: str) -> str:
         return f"{self.base_url}/{path.lstrip('/')}"
 
-    def headers(self) -> dict[str, str]:
+    async def headers(self, http: httpx.AsyncClient) -> dict[str, str]:
         """Headers for the upstream call. Built from scratch: client headers are never forwarded."""
         raise NotImplementedError
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "display_name": self.display_name,
+            "country": self.country,
+            "configured": self.configured,
+            "verified": self.verified,
+            "base_url": self.base_url,
+            "native_paths": sorted(self.native_paths),
+            "lists_models": self.lists_models,
+        }
 
     # --- unified (OpenAI chat format in, OpenAI chat format out) ---------
     def unified_request(self, body: dict[str, Any], model: str) -> UpstreamCall:
@@ -242,10 +333,10 @@ class Connector:
         return UpstreamCall(path=path, body=body, stream=bool(body.get("stream")))
 
     def native_stream_handler(self) -> StreamHandler:
-        return OpenAIStyleStreamHandler()
+        return OpenAIStyleStreamHandler(secrets=self.secrets)
 
     # --- usage --------------------------------------------------------------
     def extract_usage(self, data: Any) -> Usage:
         if not isinstance(data, dict):
             return Usage()
-        return usage_from_dict(data.get("usage"))
+        return usage_from_payload(data)

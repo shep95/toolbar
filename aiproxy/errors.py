@@ -10,6 +10,7 @@ _ERROR_TYPES = {
     402: "insufficient_balance",
     403: "permission_error",
     404: "not_found_error",
+    408: "request_timeout",
     413: "request_too_large",
     429: "rate_limit_error",
     502: "upstream_error",

@@ -9,7 +9,11 @@ layer can report which providers are configured but cannot read or change them.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import ipaddress
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -42,17 +46,49 @@ log = logging.getLogger("aiproxy.admin")
 MAX_AMOUNT = Decimal("1000000")
 
 
+def _ip_allowed(ip: str, allowlist: str) -> bool:
+    if not allowlist.strip():
+        return True
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    for entry in allowlist.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            if address in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            log.error("invalid ADMIN_ALLOWED_IPS entry %r", entry)
+    return False
+
+
+def _check_admin_ip(request: Request, services: Services) -> str:
+    ip = request.client.host if request.client else "unknown"
+    if not _ip_allowed(ip, services.settings.admin_allowed_ips):
+        log.warning("admin access from disallowed address", extra={"event": "admin_ip_denied", "client_ip": ip})
+        raise HTTPException(404, "not found")  # do not reveal that an admin area exists
+    return ip
+
+
 def require_admin(request: Request) -> Services:
     services = get_services(request)
     settings = services.settings
+    ip = _check_admin_ip(request, services)
     if not settings.admin_enabled:
         raise HTTPException(503, "admin API disabled: set ADMIN_API_TOKEN (at least 32 characters)")
+    limited, retry_after = services.admin_failure_limiter.is_limited(ip, settings.admin_auth_failures_per_minute_per_ip)
+    if limited:
+        raise HTTPException(429, "too many failed admin logins", headers={"Retry-After": str(retry_after)})
     auth = request.headers.get("authorization", "")
     scheme, _, token = auth.partition(" ")
     if scheme.lower() != "bearer" or not constant_time_equals(
         token.strip(), settings.admin_api_token.get_secret_value()
     ):
-        log.warning("admin auth failed", extra={"event": "admin_auth_failed", "client_ip": request.client.host if request.client else None})
+        services.admin_failure_limiter.check(ip, 1_000_000)
+        log.warning("admin auth failed", extra={"event": "admin_auth_failed", "client_ip": ip})
         raise HTTPException(401, "invalid admin token", headers={"WWW-Authenticate": "Bearer"})
     return services
 
@@ -205,7 +241,7 @@ async def overview(services: Services = Depends(require_admin)):
         "active_keys": active_keys,
         "pending_transactions": pending,
         **windows,
-        "providers": {name: {"configured": c.configured} for name, c in services.connectors.items()},
+        "providers": {name: {"configured": c.configured, "country": c.country} for name, c in services.connectors.items()},
         "default_fee_per_request": _money(services.settings.default_fee_per_request),
         "stripe_enabled": services.settings.stripe_enabled,
     }
@@ -213,10 +249,7 @@ async def overview(services: Services = Depends(require_admin)):
 
 @api.get("/providers")
 async def providers(services: Services = Depends(require_admin)):
-    return [
-        {"name": name, "configured": c.configured, "base_url": c.base_url, "native_paths": sorted(c.native_paths)}
-        for name, c in services.connectors.items()
-    ]
+    return [c.describe() for c in services.connectors.values()]
 
 
 # ---------------------------------------------------------------- users
@@ -293,6 +326,7 @@ async def update_user(user_id: uuid.UUID, payload: UserUpdate, services: Service
     async with services.db.session() as session, session.begin():
         user = await _get_user(session, user_id)
         user.status = payload.status
+    services.auth_cache.clear()
     log.info("user status changed", extra={"event": "admin_user_status", "user_id": str(user_id), "status": payload.status})
     return _user_json(user)
 
@@ -351,6 +385,7 @@ async def revoke_key(key_id: uuid.UUID, services: Services = Depends(require_adm
         if key is None:
             raise HTTPException(404, "key not found")
         key.status = KeyStatus.REVOKED
+    services.auth_cache.clear()
     log.info("key revoked", extra={"event": "admin_key_revoked", "api_key_id": str(key_id)})
     return _key_json(key)
 
@@ -394,6 +429,7 @@ async def upsert_pricing(payload: PricingUpsert, services: Services = Depends(re
         row.fee_per_1k_tokens = payload.fee_per_1k_tokens
         row.updated_at = utcnow()
         await session.flush()
+    services.billing.invalidate_pricing()
     log.info("pricing updated", extra={"event": "admin_pricing", "provider": provider, "model": payload.model})
     return {
         "id": row.id,
@@ -411,6 +447,7 @@ async def delete_pricing(pricing_id: int, services: Services = Depends(require_a
         if row is None:
             raise HTTPException(404, "pricing rule not found")
         await session.delete(row)
+    services.billing.invalidate_pricing()
     return {"deleted": pricing_id}
 
 
@@ -545,18 +582,25 @@ async def reconcile(services: Services = Depends(require_admin)):
 
 # ---------------------------------------------------------------- dashboard page
 
-_DASHBOARD = Path(__file__).parent / "static" / "admin.html"
+_DASHBOARD_HTML = (Path(__file__).parent / "static" / "admin.html").read_text(encoding="utf-8")
+_SCRIPTS = re.findall(r"<script>(.*?)</script>", _DASHBOARD_HTML, flags=re.S)
+# Only the page's own inline script may run (pinned by hash), so injected
+# markup can never execute script even if it got into the page.
+_SCRIPT_HASHES = " ".join(
+    "'sha256-" + base64.b64encode(hashlib.sha256(code.encode("utf-8")).digest()).decode() + "'" for code in _SCRIPTS
+)
+_DASHBOARD_CSP = (
+    f"default-src 'none'; script-src {_SCRIPT_HASHES}; style-src 'unsafe-inline'; connect-src 'self'; "
+    "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+)
 
 
 @pages.get("/admin", response_class=HTMLResponse, include_in_schema=False)
-async def dashboard() -> HTMLResponse:
+async def dashboard(request: Request) -> HTMLResponse:
     # The page itself holds no data; it calls /admin/api with the token the
     # operator types in, so it is safe to serve without auth.
+    _check_admin_ip(request, get_services(request))
     return HTMLResponse(
-        _DASHBOARD.read_text(encoding="utf-8"),
-        headers={
-            "Content-Security-Policy": "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
-            "X-Frame-Options": "DENY",
-            "Cache-Control": "no-store",
-        },
+        _DASHBOARD_HTML,
+        headers={"Content-Security-Policy": _DASHBOARD_CSP, "Cache-Control": "no-store"},
     )

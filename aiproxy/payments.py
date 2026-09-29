@@ -35,6 +35,7 @@ router = APIRouter()
 
 TOPUP_PURPOSE = "aiproxy_topup"
 SIGNATURE_TOLERANCE_SECONDS = 300
+MAX_WEBHOOK_BYTES = 1_000_000
 
 
 def verify_stripe_signature(payload: bytes, header: str, secret: str, now: float | None = None) -> bool:
@@ -128,14 +129,21 @@ async def stripe_webhook(request: Request) -> Response:
     settings = services.settings
     if not settings.stripe_enabled:
         return JSONResponse({"error": "payments disabled"}, status_code=503)
-    payload = await request.body()
+    payload = b""
+    async for chunk in request.stream():
+        payload += chunk
+        if len(payload) > MAX_WEBHOOK_BYTES:
+            return JSONResponse({"error": "payload too large"}, status_code=413)
     if not verify_stripe_signature(
         payload, request.headers.get("stripe-signature", ""), settings.stripe_webhook_secret.get_secret_value()
     ):
         log.warning("stripe webhook with bad signature", extra={"event": "stripe_bad_signature"})
         return JSONResponse({"error": "invalid signature"}, status_code=400)
 
-    event = json.loads(payload)
+    try:
+        event = json.loads(payload)
+    except ValueError:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
     if event.get("type") not in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
         return JSONResponse({"received": True, "ignored": event.get("type")})
     obj = (event.get("data") or {}).get("object") or {}
@@ -147,7 +155,13 @@ async def stripe_webhook(request: Request) -> Response:
 
     try:
         user_id = uuid.UUID(str(obj.get("client_reference_id")))
-        cents = int(obj.get("amount_subtotal") if obj.get("amount_subtotal") is not None else obj["amount_total"])
+        # Credit what was actually paid for the credit itself: the lower of the
+        # pre-tax subtotal and the final total, so a discount or coupon can
+        # never credit more than the customer paid.
+        amounts = [int(obj[k]) for k in ("amount_subtotal", "amount_total") if obj.get(k) is not None]
+        cents = min(amounts)
+        if cents <= 0:
+            raise ValueError("non-positive amount")
     except (ValueError, KeyError, TypeError):
         log.error("malformed top-up session %s", obj.get("id"))
         return JSONResponse({"received": True, "ignored": "malformed"})

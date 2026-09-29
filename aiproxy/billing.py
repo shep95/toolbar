@@ -2,11 +2,10 @@
 
 Every proxied request goes through three steps:
 
-1. ``reserve`` (before the upstream call): in one DB transaction, look up the
-   price, atomically deduct the per-request fee from the balance (only if the
-   user is active and can afford it) and insert a ``pending`` transaction.
-   Reserving up front means two concurrent requests can never both spend the
-   same last cent.
+1. ``reserve`` (before the upstream call): atomically deduct the per-request
+   fee from the balance (only if the user is active, the key is active and
+   the balance covers it) and insert a ``pending`` transaction. Reserving up
+   front means two concurrent requests can never both spend the same last cent.
 2. ``complete`` (upstream succeeded): compute the final fee from usage, adjust
    the reservation to that amount and mark the transaction ``success``.
 3. ``fail`` (upstream failed): refund the reservation in full and mark the
@@ -15,21 +14,27 @@ Every proxied request goes through three steps:
 ``complete`` and ``fail`` only act on a transaction that is still ``pending``,
 so each reservation settles exactly once even if a stale-transaction sweep and
 a late-finishing stream race each other.
+
+Speed: on PostgreSQL each step is a single auto-committed SQL statement (one
+network round trip, row locks held for microseconds). Other databases (SQLite
+in tests and local development) use the equivalent multi-statement version.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import and_, select, update
+from sqlalchemy import and_, exists, select, text, update
+from sqlalchemy.exc import DBAPIError
 
 from .connectors import Usage
 from .db import Database
-from .models import ApiKey, Pricing, Transaction, TxStatus, User, UserStatus, utcnow
+from .models import ApiKey, KeyStatus, Pricing, Transaction, TxStatus, User, UserStatus, utcnow
 
 log = logging.getLogger("aiproxy.billing")
 
@@ -72,10 +77,115 @@ class Settlement:
     applied: bool
 
 
+# --------------------------------------------------------------------- PostgreSQL fast path
+
+_PG_RESERVE = text(
+    """
+    WITH u AS (
+        UPDATE users SET balance = balance - CAST(:fee AS numeric)
+        WHERE id = CAST(:uid AS uuid)
+          AND status = 'active'
+          AND balance > 0
+          AND balance >= CAST(:fee AS numeric)
+          AND EXISTS (SELECT 1 FROM api_keys k WHERE k.id = CAST(:kid AS uuid) AND k.status = 'active')
+        RETURNING balance
+    ), t AS (
+        INSERT INTO transactions
+            (id, user_id, api_key_id, provider, model_called, endpoint, fee_charged, timestamp, status, request_id)
+        SELECT CAST(:txid AS uuid), CAST(:uid AS uuid), CAST(:kid AS uuid), CAST(:provider AS varchar),
+               CAST(:model AS varchar), CAST(:endpoint AS varchar), CAST(:fee AS numeric), now(),
+               'pending', CAST(:rid AS varchar)
+        FROM u
+        RETURNING id
+    )
+    SELECT balance FROM u
+    """
+)
+
+_PG_SETTLE_TX = """
+    UPDATE transactions SET
+        status = 'success', fee_charged = CAST(:fee AS numeric), tokens_used = CAST(:tokens AS integer),
+        input_tokens = CAST(:input AS integer), output_tokens = CAST(:output AS integer),
+        upstream_status = CAST(:ustatus AS integer), latency_ms = CAST(:latency AS integer), completed_at = now(),
+        model_called = COALESCE(CAST(:model AS varchar), model_called)
+    WHERE id = CAST(:txid AS uuid) AND status = 'pending'
+    RETURNING user_id
+"""
+_PG_COMPLETE_FLAT = text(_PG_SETTLE_TX)
+_PG_COMPLETE_ADJUST = text(
+    """
+    WITH t AS (
+        UPDATE transactions SET
+            status = 'success', fee_charged = CAST(:fee AS numeric), tokens_used = CAST(:tokens AS integer),
+            input_tokens = CAST(:input AS integer), output_tokens = CAST(:output AS integer),
+            upstream_status = CAST(:ustatus AS integer), latency_ms = CAST(:latency AS integer), completed_at = now(),
+            model_called = COALESCE(CAST(:model AS varchar), model_called)
+        WHERE id = CAST(:txid AS uuid) AND status = 'pending'
+        RETURNING user_id
+    )
+    UPDATE users SET balance = users.balance - CAST(:delta AS numeric)
+    FROM t WHERE users.id = t.user_id
+    RETURNING users.balance
+    """
+)
+_PG_REFUND = text(
+    """
+    WITH t AS (
+        UPDATE transactions SET
+            status = CAST(:status AS varchar), fee_charged = 0, upstream_status = CAST(:ustatus AS integer),
+            error = CAST(:error AS text), latency_ms = CAST(:latency AS integer), completed_at = now()
+        WHERE id = CAST(:txid AS uuid) AND status = 'pending'
+        RETURNING user_id
+    )
+    UPDATE users SET balance = users.balance + CAST(:amount AS numeric)
+    FROM t WHERE users.id = t.user_id
+    RETURNING users.id
+    """
+)
+
+
 class BillingEngine:
-    def __init__(self, db: Database, default_fee_per_request: Decimal):
+    def __init__(self, db: Database, default_fee_per_request: Decimal, pricing_cache_seconds: float = 30.0):
         self.db = db
         self.default_price = Price(fee_per_request=Decimal(default_fee_per_request))
+        self.fast = db.engine.dialect.name == "postgresql"
+        self._autocommit = db.engine.execution_options(isolation_level="AUTOCOMMIT") if self.fast else None
+        self._price_cache: dict[tuple[str, str], tuple[Price, float]] = {}
+        self._pricing_ttl = pricing_cache_seconds
+
+    async def _pg(self, statement, params: dict):
+        """Run one auto-committed statement; retry once if the pooled connection was dead.
+
+        Settling and refunding are idempotent (they only touch pending rows).
+        A retried reservation can at worst hold a second fee on a transaction
+        that never reaches a provider, which the stale sweep refunds.
+        """
+        for attempt in (1, 2):
+            try:
+                async with self._autocommit.connect() as conn:
+                    return (await conn.execute(statement, params)).first()
+            except DBAPIError as exc:
+                if attempt == 1 and exc.connection_invalidated:
+                    continue
+                raise
+
+    # ------------------------------------------------------------ pricing
+
+    def invalidate_pricing(self) -> None:
+        self._price_cache.clear()
+
+    async def price_for(self, provider: str, model: str | None) -> Price:
+        key = (provider, model or "*")
+        cached = self._price_cache.get(key)
+        now = time.monotonic()
+        if cached and cached[1] > now:
+            return cached[0]
+        async with self.db.session() as session:
+            price = await self.lookup_price(session, provider, model)
+        if len(self._price_cache) > 10_000:
+            self._price_cache.clear()
+        self._price_cache[key] = (price, now + self._pricing_ttl)
+        return price
 
     async def lookup_price(self, session, provider: str, model: str | None) -> Price:
         candidates = [(provider, model or "*"), (provider, "*"), ("*", "*")]
@@ -94,6 +204,8 @@ class BillingEngine:
                 return Price(Decimal(row.fee_per_request), Decimal(row.fee_per_1k_tokens))
         return self.default_price
 
+    # ------------------------------------------------------------ reserve
+
     async def reserve(
         self,
         *,
@@ -104,49 +216,66 @@ class BillingEngine:
         endpoint: str,
         request_id: str,
     ) -> Reservation:
-        async with self.db.session() as session, session.begin():
-            price = await self.lookup_price(session, provider, model)
-            reserved = price.fee_for(None)
-            result = await session.execute(
-                update(User)
-                .where(
-                    and_(
-                        User.id == user_id,
-                        User.status == UserStatus.ACTIVE,
-                        User.balance > 0,
-                        User.balance >= reserved,
-                    )
-                )
-                .values(balance=User.balance - reserved)
-                .returning(User.balance)
+        price = await self.price_for(provider, model)
+        reserved = price.fee_for(None)
+        tx_id = uuid.uuid4()
+        model = model[:200] if model else None
+        if self.fast:
+            row = await self._pg(
+                _PG_RESERVE,
+                {
+                    "fee": reserved, "uid": user_id, "kid": api_key_id, "txid": tx_id,
+                    "provider": provider, "model": model, "endpoint": endpoint[:100], "rid": request_id,
+                },
             )
-            balance_after = result.scalar_one_or_none()
-            if balance_after is None:
-                status = (await session.execute(select(User.status).where(User.id == user_id))).scalar_one_or_none()
-                if status != UserStatus.ACTIVE:
-                    raise BillingRejected(403, "user_suspended", "account is suspended")
-                raise BillingRejected(402, "insufficient_balance", "insufficient balance; top up to continue")
+            balance_after = row[0] if row else None
+        else:
+            balance_after = await self._reserve_portable(user_id, api_key_id, provider, model, endpoint, request_id, reserved, tx_id)
+        if balance_after is None:
+            raise await self._rejection_reason(user_id, api_key_id)
+        return Reservation(
+            transaction_id=tx_id, user_id=user_id, price=price, reserved=reserved, balance_after=Decimal(balance_after)
+        )
 
-            tx = Transaction(
-                user_id=user_id,
-                api_key_id=api_key_id,
-                provider=provider,
-                model_called=(model or None) and model[:200],
-                endpoint=endpoint[:100],
-                fee_charged=reserved,
-                status=TxStatus.PENDING,
-                request_id=request_id,
+    async def _reserve_portable(self, user_id, api_key_id, provider, model, endpoint, request_id, reserved, tx_id):
+        async with self.db.session() as session, session.begin():
+            balance_after = (
+                await session.execute(
+                    update(User)
+                    .where(
+                        and_(
+                            User.id == user_id,
+                            User.status == UserStatus.ACTIVE,
+                            User.balance > 0,
+                            User.balance >= reserved,
+                            exists().where(ApiKey.id == api_key_id, ApiKey.status == KeyStatus.ACTIVE),
+                        )
+                    )
+                    .values(balance=User.balance - reserved)
+                    .returning(User.balance)
+                )
+            ).scalar_one_or_none()
+            if balance_after is None:
+                return None
+            session.add(
+                Transaction(
+                    id=tx_id, user_id=user_id, api_key_id=api_key_id, provider=provider, model_called=model,
+                    endpoint=endpoint[:100], fee_charged=reserved, status=TxStatus.PENDING, request_id=request_id,
+                )
             )
-            session.add(tx)
-            await session.execute(update(ApiKey).where(ApiKey.id == api_key_id).values(last_used_at=utcnow()))
-            await session.flush()
-            return Reservation(
-                transaction_id=tx.id,
-                user_id=user_id,
-                price=price,
-                reserved=reserved,
-                balance_after=Decimal(balance_after),
-            )
+            return balance_after
+
+    async def _rejection_reason(self, user_id: uuid.UUID, api_key_id: uuid.UUID) -> BillingRejected:
+        async with self.db.session() as session:
+            user_status = (await session.execute(select(User.status).where(User.id == user_id))).scalar_one_or_none()
+            key_status = (await session.execute(select(ApiKey.status).where(ApiKey.id == api_key_id))).scalar_one_or_none()
+        if key_status != KeyStatus.ACTIVE:
+            return BillingRejected(401, "key_revoked", "this API key has been revoked")
+        if user_status != UserStatus.ACTIVE:
+            return BillingRejected(403, "user_suspended", "account is suspended")
+        return BillingRejected(402, "insufficient_balance", "insufficient balance; top up to continue")
+
+    # ------------------------------------------------------------ settle
 
     async def complete(
         self,
@@ -158,19 +287,29 @@ class BillingEngine:
         latency_ms: int,
     ) -> Settlement:
         fee = reservation.price.fee_for(usage.total)
+        delta = fee - reservation.reserved
+        model = model[:200] if model else None
+        if self.fast:
+            params = {
+                "fee": fee, "tokens": usage.total, "input": usage.input_tokens, "output": usage.output_tokens,
+                "ustatus": upstream_status, "latency": latency_ms, "model": model,
+                "txid": reservation.transaction_id, "delta": delta,
+            }
+            row = await self._pg(_PG_COMPLETE_ADJUST if delta else _PG_COMPLETE_FLAT, params)
+            if row is None:
+                log.warning("transaction %s was already settled; not charging again", reservation.transaction_id)
+                return Settlement(fee=Decimal("0"), balance=None, applied=False)
+            balance = Decimal(row[0]) if delta else reservation.balance_after
+            return Settlement(fee=fee, balance=balance, applied=True)
+
         async with self.db.session() as session, session.begin():
             values = dict(
-                status=TxStatus.SUCCESS,
-                fee_charged=fee,
-                tokens_used=usage.total,
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
-                upstream_status=upstream_status,
-                latency_ms=latency_ms,
+                status=TxStatus.SUCCESS, fee_charged=fee, tokens_used=usage.total, input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens, upstream_status=upstream_status, latency_ms=latency_ms,
                 completed_at=utcnow(),
             )
             if model:
-                values["model_called"] = model[:200]
+                values["model_called"] = model
             settled = await session.execute(
                 update(Transaction)
                 .where(Transaction.id == reservation.transaction_id, Transaction.status == TxStatus.PENDING)
@@ -180,7 +319,6 @@ class BillingEngine:
             if settled.scalar_one_or_none() is None:
                 log.warning("transaction %s was already settled; not charging again", reservation.transaction_id)
                 return Settlement(fee=Decimal("0"), balance=None, applied=False)
-            delta = fee - reservation.reserved
             balance = reservation.balance_after
             if delta:
                 # Token-based pricing can cost more than the reservation. The
@@ -203,40 +341,46 @@ class BillingEngine:
         error: str | None = None,
         latency_ms: int | None = None,
     ) -> bool:
-        async with self.db.session() as session, session.begin():
-            return await self._refund(
-                session,
-                transaction_id=reservation.transaction_id,
-                user_id=reservation.user_id,
-                amount=reservation.reserved,
-                status=status,
-                upstream_status=upstream_status,
-                error=error,
-                latency_ms=latency_ms,
-            )
-
-    async def _refund(self, session, *, transaction_id, user_id, amount, status, upstream_status, error, latency_ms) -> bool:
-        settled = await session.execute(
-            update(Transaction)
-            .where(Transaction.id == transaction_id, Transaction.status == TxStatus.PENDING)
-            .values(
-                status=status,
-                fee_charged=Decimal("0"),
-                upstream_status=upstream_status,
-                error=(error or None) and error[:2000],
-                latency_ms=latency_ms,
-                completed_at=utcnow(),
-            )
-            .returning(Transaction.id)
+        return await self._refund(
+            transaction_id=reservation.transaction_id,
+            user_id=reservation.user_id,
+            amount=reservation.reserved,
+            status=status,
+            upstream_status=upstream_status,
+            error=error,
+            latency_ms=latency_ms,
         )
-        if settled.scalar_one_or_none() is None:
-            return False
-        if amount:
-            await session.execute(update(User).where(User.id == user_id).values(balance=User.balance + amount))
-        return True
+
+    async def _refund(self, *, transaction_id, user_id, amount, status, upstream_status, error, latency_ms) -> bool:
+        error = error[:2000] if error else None
+        if self.fast:
+            row = await self._pg(
+                _PG_REFUND,
+                {
+                    "status": status, "ustatus": upstream_status, "error": error, "latency": latency_ms,
+                    "txid": transaction_id, "amount": Decimal(amount),
+                },
+            )
+            return row is not None
+
+        async with self.db.session() as session, session.begin():
+            settled = await session.execute(
+                update(Transaction)
+                .where(Transaction.id == transaction_id, Transaction.status == TxStatus.PENDING)
+                .values(
+                    status=status, fee_charged=Decimal("0"), upstream_status=upstream_status, error=error,
+                    latency_ms=latency_ms, completed_at=utcnow(),
+                )
+                .returning(Transaction.id)
+            )
+            if settled.scalar_one_or_none() is None:
+                return False
+            if amount:
+                await session.execute(update(User).where(User.id == user_id).values(balance=User.balance + amount))
+            return True
 
     async def reconcile_stale(self, older_than: timedelta, now: datetime | None = None) -> int:
-        """Refund and close transactions left pending (crash, dropped connection...)."""
+        """Refund and close transactions left pending (crash, lost settlement...)."""
         cutoff = (now or utcnow()) - older_than
         async with self.db.session() as session:
             stale = (
@@ -248,18 +392,16 @@ class BillingEngine:
             ).all()
         count = 0
         for tx_id, user_id, reserved in stale:
-            async with self.db.session() as session, session.begin():
-                if await self._refund(
-                    session,
-                    transaction_id=tx_id,
-                    user_id=user_id,
-                    amount=Decimal(reserved),
-                    status=TxStatus.ERROR,
-                    upstream_status=None,
-                    error="abandoned: still pending after timeout; reservation refunded",
-                    latency_ms=None,
-                ):
-                    count += 1
+            if await self._refund(
+                transaction_id=tx_id,
+                user_id=user_id,
+                amount=Decimal(reserved),
+                status=TxStatus.ERROR,
+                upstream_status=None,
+                error="abandoned: still pending after timeout; reservation refunded",
+                latency_ms=None,
+            ):
+                count += 1
         if count:
             log.warning("reconciled %d stale pending transactions", count)
         return count

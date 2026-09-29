@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aiproxy"
-version = "0.1.0"
+version = "0.2.0"
 description = "Universal AI API proxy with per-request billing, key management and usage tracking"
 requires-python = ">=3.11"
 dependencies = [
@@ -12,7 +12,8 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "sqlalchemy[asyncio]>=2.0.30",
     "asyncpg>=0.29",
-    "httpx>=0.27",
+    "httpx[http2]>=0.27",
+    "orjson>=3.10",
     "pydantic-settings>=2.3",
     "email-validator>=2.0",
 ]
@@ -22,6 +23,8 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
     "aiosqlite>=0.20",
+    "bandit>=1.7",
+    "pip-audit>=2.7",
 ]
 
 [tool.setuptools]

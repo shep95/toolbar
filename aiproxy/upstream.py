@@ -3,12 +3,16 @@
 By the time ``forward`` runs, the gateway has authenticated the caller, the
 router has picked a connector, and the provider-specific request is built.
 ``forward`` reserves the fee, calls the provider, then either charges
-(success) or refunds (any failure) before returning the response.
+(success) or refunds (any failure).
+
+Speed: the fee reservation is the only database write before the provider
+call. For non-streaming responses the settlement write runs after the
+response has been sent, so the caller never waits on it.
 """
 
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
 import time
 from collections.abc import Callable
@@ -18,11 +22,13 @@ from typing import Any
 
 import anyio
 import httpx
+import orjson
 from fastapi.responses import Response, StreamingResponse
+from starlette.background import BackgroundTask
 
 from .billing import BillingRejected, Reservation
-from .connectors import Connector, StreamHandler, UpstreamCall
-from .connectors.base import SSEParser, sse
+from .connectors import Connector, StreamHandler, UpstreamCall, Usage
+from .connectors.base import SSEParser, StreamTooLarge, scrub, sse
 from .db import DB_UNAVAILABLE_ERRORS
 from .errors import GatewayError, error_response
 from .models import TxStatus
@@ -30,7 +36,7 @@ from .services import Services
 
 log = logging.getLogger("aiproxy.upstream")
 
-# Upstream 4xx responses we pass straight back: they describe a problem with
+# Upstream 4xx responses we pass back (scrubbed): they describe a problem with
 # the caller's request (bad model name, context too long, ...).
 _PASSTHROUGH_CLIENT_ERRORS = {400, 404, 409, 413, 415, 422, 429}
 
@@ -42,6 +48,16 @@ class Caller:
     key_prefix: str
     key_provider: str
     rate_limit_per_minute: int
+
+
+class _Progress:
+    """Tracks whether the provider has been contacted, for cancellation handling."""
+
+    upstream_started = False
+
+
+class ResponseTooLarge(Exception):
+    pass
 
 
 def _money(value: Decimal) -> str:
@@ -64,11 +80,9 @@ async def forward(
     transform: Callable[[dict[str, Any]], dict[str, Any]] | None,
     stream_handler: StreamHandler | None,
 ) -> Response:
-    billing = services.billing
-
     # 1. Pre-log the transaction as pending and reserve the fee.
     try:
-        reservation = await billing.reserve(
+        reservation = await services.billing.reserve(
             user_id=caller.user_id,
             api_key_id=caller.api_key_id,
             provider=connector.name,
@@ -83,7 +97,9 @@ async def forward(
         raise GatewayError(
             503, "database_unavailable", "service temporarily unavailable", write_audit_row=False
         ) from None
+    services.key_usage.touch(caller.api_key_id)
 
+    progress = _Progress()
     try:
         return await _call_upstream(
             services,
@@ -95,7 +111,18 @@ async def forward(
             model=model,
             transform=transform,
             stream_handler=stream_handler,
+            progress=progress,
         )
+    except asyncio.CancelledError:
+        # The client went away. If the provider was already called it is doing
+        # (and billing us for) the work, so the round trip is charged; hanging
+        # up must not be a way to get free requests.
+        with anyio.CancelScope(shield=True):
+            if progress.upstream_started:
+                await _settle_quietly(services, reservation, request_id, model=model, status=499)
+            else:
+                await _refund(services, reservation, request_id, error="client disconnected before upstream call", latency_ms=0)
+        raise
     except Exception as exc:
         # A bug must never leave the caller charged: refund now rather than
         # waiting for the stale-transaction sweep.
@@ -116,14 +143,21 @@ async def _call_upstream(
     model: str | None,
     transform: Callable[[dict[str, Any]], dict[str, Any]] | None,
     stream_handler: StreamHandler | None,
+    progress: _Progress,
 ) -> Response:
     base_headers = {"X-Request-Id": request_id, "X-Transaction-Id": str(reservation.transaction_id)}
 
     # 2. Call the provider.
     start = time.monotonic()
+    try:
+        headers = await connector.headers(services.http)
+    except httpx.HTTPError as exc:
+        await _refund(services, reservation, request_id, error=f"auth token: {exc!r}", latency_ms=_elapsed_ms(start))
+        return error_response(502, "upstream_auth_failed", f"{connector.name} is unavailable right now", request_id, base_headers)
     upstream_request = services.http.build_request(
-        "POST", connector.url(call.path), headers=connector.headers(), json=call.body
+        "POST", connector.url(call.path), headers=headers, content=orjson.dumps(call.body)
     )
+    progress.upstream_started = True
     try:
         upstream = await services.http.send(upstream_request, stream=True)
     except httpx.TimeoutException as exc:
@@ -136,8 +170,8 @@ async def _call_upstream(
     # 3a. Provider returned an error: refund and report.
     if upstream.status_code >= 400:
         try:
-            content = await upstream.aread()
-        except httpx.HTTPError:
+            content = await _read_capped(upstream, 64_000)
+        except (httpx.HTTPError, ResponseTooLarge):
             content = b""
         finally:
             await upstream.aclose()
@@ -161,12 +195,16 @@ async def _call_upstream(
                 **base_headers,
                 "X-Fee-Reserved": _money(reservation.reserved),
                 "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
             },
         )
 
     # 3c. Non-streaming success.
     try:
-        content = await upstream.aread()
+        content = await _read_capped(upstream, services.settings.max_upstream_response_bytes)
+    except ResponseTooLarge:
+        await _refund(services, reservation, request_id, error="response too large", latency_ms=_elapsed_ms(start))
+        return error_response(502, "upstream_bad_response", f"{connector.name} returned an oversized response", request_id, base_headers)
     except httpx.HTTPError as exc:
         await _refund(services, reservation, request_id, error=f"read: {exc!r}", latency_ms=_elapsed_ms(start))
         return error_response(502, "upstream_unavailable", f"{connector.name} connection dropped", request_id, base_headers)
@@ -174,9 +212,12 @@ async def _call_upstream(
         await upstream.aclose()
 
     try:
-        data = json.loads(content)
-        body = json.dumps(transform(data)).encode("utf-8") if transform else content
-    except (ValueError, TypeError, AttributeError, KeyError) as exc:
+        data = orjson.loads(content)
+        if transform is None or connector.unified_response_is_native:
+            body = content  # already in the caller's format: no re-serialisation
+        else:
+            body = orjson.dumps(transform(data))
+    except (orjson.JSONDecodeError, TypeError, AttributeError, KeyError) as exc:
         await _refund(
             services, reservation, request_id, upstream_status=upstream.status_code,
             error=f"unparseable upstream response: {exc!r}", latency_ms=_elapsed_ms(start),
@@ -184,34 +225,73 @@ async def _call_upstream(
         return error_response(502, "upstream_bad_response", f"{connector.name} returned an invalid response", request_id, base_headers)
 
     usage = connector.extract_usage(data)
-    headers = dict(base_headers)
-    try:
-        settlement = await services.billing.complete(
-            reservation,
-            usage=usage,
-            model=(data.get("model") if isinstance(data, dict) else None) or model,
-            upstream_status=upstream.status_code,
-            latency_ms=_elapsed_ms(start),
+    latency_ms = _elapsed_ms(start)
+    fee = reservation.price.fee_for(usage.total)
+    headers = {
+        **base_headers,
+        "X-Fee-Charged": _money(fee),
+        "X-Balance-Remaining": _money(reservation.balance_after - (fee - reservation.reserved)),
+    }
+    response_model = (data.get("model") if isinstance(data, dict) else None) or model
+
+    async def settle() -> None:
+        await _settle_quietly(
+            services, reservation, request_id, model=response_model, status=upstream.status_code,
+            usage=usage, latency_ms=latency_ms, provider=connector.name, user_id=caller.user_id,
         )
-        headers["X-Fee-Charged"] = _money(settlement.fee)
-        if settlement.balance is not None:
-            headers["X-Balance-Remaining"] = _money(settlement.balance)
+
+    # The settlement write happens after the response is on its way.
+    return Response(
+        content=body, status_code=upstream.status_code, media_type="application/json",
+        headers=headers, background=BackgroundTask(settle),
+    )
+
+
+async def _read_capped(response: httpx.Response, limit: int) -> bytes:
+    declared = response.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > limit:
+        raise ResponseTooLarge()
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in response.aiter_bytes():
+        size += len(chunk)
+        if size > limit:
+            raise ResponseTooLarge()
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _settle_quietly(
+    services: Services,
+    reservation: Reservation,
+    request_id: str,
+    *,
+    model: str | None,
+    status: int,
+    usage=None,
+    latency_ms: int = 0,
+    provider: str | None = None,
+    user_id: Any = None,
+) -> None:
+    try:
+        await services.billing.complete(
+            reservation, usage=usage or Usage(), model=model, upstream_status=status, latency_ms=latency_ms
+        )
     except DB_UNAVAILABLE_ERRORS:
-        # The provider already did the work, so the caller still gets the answer.
         # The transaction stays pending and the reconciler closes it later.
         log.exception("could not settle transaction", extra={"request_id": request_id})
+        return
     log.info(
         "proxied",
         extra={
             "event": "request_success",
             "request_id": request_id,
-            "provider": connector.name,
-            "user_id": str(caller.user_id),
-            "tokens": usage.total,
-            "latency_ms": _elapsed_ms(start),
+            "provider": provider,
+            "user_id": str(user_id) if user_id else None,
+            "tokens": usage.total if usage else None,
+            "latency_ms": latency_ms,
         },
     )
-    return Response(content=body, status_code=upstream.status_code, media_type="application/json", headers=headers)
 
 
 async def _stream(
@@ -238,9 +318,9 @@ async def _stream(
         tail = handler.finish()
         if tail:
             yield tail
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, StreamTooLarge) as exc:
         interrupted = f"stream interrupted: {exc!r}"
-        yield sse(json.dumps({"error": {"message": "upstream stream interrupted", "type": "upstream_error", "request_id": request_id}}))
+        yield sse(orjson.dumps({"error": {"message": "upstream stream interrupted", "type": "upstream_error", "request_id": request_id}}))
     finally:
         # Shielded so billing still settles if the client disconnects mid-stream.
         with anyio.CancelScope(shield=True):
@@ -296,10 +376,11 @@ def _upstream_error_response(
 ) -> Response:
     headers = {**headers, "X-Upstream-Status": str(status)}
     if status in _PASSTHROUGH_CLIENT_ERRORS:
+        content = scrub(content, *connector.secrets)
         media_type = "application/json"
         try:
-            json.loads(content)
-        except ValueError:
+            orjson.loads(content)
+        except orjson.JSONDecodeError:
             media_type = "text/plain"
         return Response(content=content, status_code=status, media_type=media_type, headers=headers)
     if status in (401, 403):

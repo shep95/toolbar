@@ -22,9 +22,14 @@ class Database:
     @classmethod
     def from_settings(cls, settings: Settings) -> Database:
         url = settings.database_url
-        kwargs: dict = {"pool_pre_ping": True}
+        kwargs: dict = {}
         if url.startswith("postgresql+asyncpg"):
+            # No pool_pre_ping: it adds a round trip to every checkout. Dead
+            # connections are detected on use and replaced (see is_disconnect),
+            # and pool_recycle retires connections before servers drop them.
             kwargs["pool_size"] = settings.database_pool_size
+            kwargs["max_overflow"] = settings.database_max_overflow
+            kwargs["pool_recycle"] = 1800
             kwargs["connect_args"] = {"timeout": settings.database_connect_timeout_seconds}
         return cls(create_async_engine(url, **kwargs))
 
@@ -42,6 +47,11 @@ class Database:
             return True
         except DB_UNAVAILABLE_ERRORS:
             return False
+
+    @staticmethod
+    def is_disconnect(exc: BaseException) -> bool:
+        """True when a pooled connection turned out to be dead and was discarded."""
+        return bool(getattr(exc, "connection_invalidated", False))
 
     async def dispose(self) -> None:
         await self.engine.dispose()

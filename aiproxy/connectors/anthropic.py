@@ -9,9 +9,11 @@ path translates in both directions.
 
 from __future__ import annotations
 
-import json
 import time
 from typing import Any
+
+import httpx
+import orjson
 
 from .base import (
     Connector,
@@ -21,6 +23,7 @@ from .base import (
     UpstreamCall,
     Usage,
     openai_chat_completion,
+    scrub,
     sse,
     usage_from_dict,
 )
@@ -82,14 +85,17 @@ def _convert_content(content: Any) -> str | list[dict[str, Any]]:
 
 class AnthropicConnector(Connector):
     name = "anthropic"
+    display_name = "Anthropic Claude"
+    country = "US"
     native_paths = frozenset({"messages"})
+    lists_models = True
 
     def __init__(self, base_url: str, api_key: str | None, version: str, default_max_tokens: int) -> None:
         super().__init__(base_url, api_key)
         self.version = version
         self.default_max_tokens = default_max_tokens
 
-    def headers(self) -> dict[str, str]:
+    async def headers(self, http: httpx.AsyncClient) -> dict[str, str]:
         return {
             "x-api-key": self._api_key or "",
             "anthropic-version": self.version,
@@ -157,18 +163,18 @@ class AnthropicConnector(Connector):
 
     def unified_stream_handler(self, body: dict[str, Any]) -> StreamHandler:
         include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
-        return AnthropicToOpenAIStream(include_usage=include_usage)
+        return AnthropicToOpenAIStream(include_usage=include_usage, secrets=self.secrets)
 
     # --- native ----------------------------------------------------------
     def native_stream_handler(self) -> StreamHandler:
-        return AnthropicNativeStream()
+        return AnthropicNativeStream(secrets=self.secrets)
 
 
 class _AnthropicStreamBase(StreamHandler):
     def _track(self, event: SSEEvent) -> dict[str, Any] | None:
         try:
-            payload = json.loads(event.data)
-        except ValueError:
+            payload = orjson.loads(event.data)
+        except orjson.JSONDecodeError:
             return None
         if not isinstance(payload, dict):
             return None
@@ -185,21 +191,23 @@ class _AnthropicStreamBase(StreamHandler):
                     output_tokens=delta_usage.output_tokens,
                 )
         elif kind == "error":
-            self.state.error = json.dumps(payload.get("error"))[:500]
+            self.state.error = orjson.dumps(payload.get("error"))[:500].decode("utf-8", errors="replace")
         return payload
 
 
 class AnthropicNativeStream(_AnthropicStreamBase):
     def handle(self, event: SSEEvent) -> bytes:
-        self._track(event)
+        payload = self._track(event)
+        if payload is not None and (payload.get("type") or event.event) == "error":
+            return sse(scrub(event.data.encode(), *self.secrets), event.event)
         return sse(event.data, event.event)
 
 
 class AnthropicToOpenAIStream(_AnthropicStreamBase):
     """Translates Anthropic Messages stream events into OpenAI chat.completion.chunk events."""
 
-    def __init__(self, include_usage: bool) -> None:
-        super().__init__()
+    def __init__(self, include_usage: bool, secrets: tuple[str | None, ...] = ()) -> None:
+        super().__init__(secrets)
         self.include_usage = include_usage
         self.message_id = ""
         self.created = 0
@@ -207,7 +215,7 @@ class AnthropicToOpenAIStream(_AnthropicStreamBase):
 
     def _chunk(self, delta: dict[str, Any], finish_reason: str | None = None) -> bytes:
         return sse(
-            json.dumps(
+            orjson.dumps(
                 {
                     "id": self.message_id,
                     "object": "chat.completion.chunk",
@@ -240,7 +248,7 @@ class AnthropicToOpenAIStream(_AnthropicStreamBase):
         if kind == "message_stop":
             return self._final()
         if kind == "error":
-            return sse(json.dumps({"error": payload.get("error")}))
+            return sse(scrub(orjson.dumps({"error": payload.get("error")}), *self.secrets))
         return b""  # ping, content_block_start/stop
 
     def _final(self) -> bytes:
@@ -251,7 +259,7 @@ class AnthropicToOpenAIStream(_AnthropicStreamBase):
         if self.include_usage:
             usage = self.state.usage
             out += sse(
-                json.dumps(
+                orjson.dumps(
                     {
                         "id": self.message_id,
                         "object": "chat.completion.chunk",

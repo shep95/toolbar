@@ -26,8 +26,22 @@ def test_rate_limiter_sliding_window():
     allowed, retry = limiter.check("k", 2)
     assert not allowed and 1 <= retry <= 61
     assert limiter.check("other", 2)[0]
+    # Sliding-window counter: just after the boundary most of the previous
+    # minute still counts; half-way through, half of it does.
     now[0] = 60.5
+    assert not limiter.check("k", 2)[0]
+    now[0] = 90.0
     assert limiter.check("k", 2)[0]
+    now[0] = 200.0
+    assert [limiter.check("k", 2)[0] for _ in range(3)] == [True, True, False]
+    assert not limiter.is_limited("fresh", 1)[0]
+
+
+def test_rate_limiter_memory_is_bounded():
+    limiter = RateLimiter(window_seconds=60, max_keys=100)
+    for i in range(1000):
+        limiter.check(f"ip-{i}", 5)
+    assert len(limiter._state) <= 100
 
 
 def test_key_format_and_upstream_detection():
@@ -55,3 +69,22 @@ def test_usage_shapes():
 def test_database_url_normalisation():
     s = Settings(_env_file=None, database_url="postgres://u:p@host:5432/db")
     assert s.database_url == "postgresql+asyncpg://u:p@host:5432/db"
+
+
+def test_scrub_removes_identifiers_but_not_normal_text():
+    from aiproxy.connectors.base import scrub
+
+    text = b'{"error":"limit for org-ABCdef123456 key sk-proj-abcdefgh12345678 api_key=abcdefghijklmnop1234"}'
+    out = scrub(text, "my-secret-upstream-key")
+    assert b"org-ABCdef123456" not in out and b"sk-proj-abcdefgh" not in out and b"abcdefghijklmnop1234" not in out
+    assert scrub(b"the task-sk is organic", "x") == b"the task-sk is organic"
+    assert scrub(b"raw my-secret-upstream-key here", "my-secret-upstream-key") == b"raw *** here"
+
+
+def test_http_client_uses_http2_and_long_keepalive():
+    from aiproxy.main import build_http_client
+
+    client = build_http_client(Settings(_env_file=None))
+    pool = client._transport._pool
+    assert pool._http2 is True
+    assert pool._keepalive_expiry == 120.0
