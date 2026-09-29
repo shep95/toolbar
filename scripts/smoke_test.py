@@ -13,7 +13,11 @@ suspends them at the end. Exits non-zero if any check fails.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
+import json
 import os
+import uuid
 import sys
 import time
 from decimal import Decimal
@@ -37,6 +41,10 @@ def main() -> int:
     parser.add_argument(
         "--assume-https", action="store_true",
         help="send X-Forwarded-Proto: https (only for testing a local container without a TLS proxy)",
+    )
+    parser.add_argument(
+        "--webhook-secret", default=os.environ.get("STRIPE_WEBHOOK_SECRET"),
+        help="Stripe signing secret (whsec_...); enables the top-up checks (no card is charged)",
     )
     parser.add_argument(
         "--wait-seconds", type=int, default=0,
@@ -127,6 +135,12 @@ def main() -> int:
         else:
             print("SKIP  cost guard and zero-balance checks (no provider has credentials yet)")
 
+        # --- Stripe top-ups ---------------------------------------------------
+        if args.webhook_secret:
+            stripe_checks(c, admin, args.webhook_secret, auth, bool(overview.get("stripe_enabled")), stamp, created_users)
+        else:
+            print("SKIP  Stripe checks (pass --webhook-secret or set STRIPE_WEBHOOK_SECRET)")
+
         # --- real billed calls -------------------------------------------------
         balance = Decimal("1.00")
         for model in args.model:
@@ -161,6 +175,56 @@ def main() -> int:
             if r is not None:
                 check("revoked key stops working", r.status_code == 401, f"HTTP {r.status_code}")
     return summary()
+
+
+def _signed(payload: bytes, secret: str) -> dict:
+    ts = str(int(time.time()))
+    sig = hmac.new(secret.encode(), ts.encode() + b"." + payload, hashlib.sha256).hexdigest()
+    return {"Stripe-Signature": f"t={ts},v1={sig}", "Content-Type": "application/json"}
+
+
+def _event(user_id: str, session_id: str, cents: int, purpose: str | None = "aiproxy_topup") -> bytes:
+    metadata = {"purpose": purpose, "user_id": user_id} if purpose else {"order": "other-product"}
+    return json.dumps({
+        "id": "evt_selfcheck_" + uuid.uuid4().hex[:12],
+        "type": "checkout.session.completed",
+        "data": {"object": {
+            "id": session_id, "client_reference_id": user_id, "payment_status": "paid", "currency": "usd",
+            "amount_subtotal": cents, "amount_total": cents, "metadata": metadata,
+        }},
+    }).encode()
+
+
+def stripe_checks(c, admin, secret, user_auth, stripe_key_set, stamp, created_users) -> None:
+    """Exercise the live webhook with correctly signed events. No card is charged."""
+    r = c.post("/admin/api/users", json={"email": f"smoke-stripe-{stamp}@example.com"}, headers=admin)
+    user = r.json()
+    created_users.append(user["id"])
+
+    def balance() -> str:
+        return c.get(f"/admin/api/users/{user['id']}", headers=admin).json()["balance"]
+
+    session = f"cs_selfcheck_{stamp}_{uuid.uuid4().hex[:8]}"
+    payload = _event(user["id"], session, 100)
+    r = c.post("/stripe/webhook", content=payload, headers=_signed(payload, secret))
+    check("webhook accepts a signed payment and credits $1.00", r.status_code == 200 and r.json().get("credited") == "1",
+          r.text[:120])
+    check("balance credited", balance() == "1.000000", balance())
+    r = c.post("/stripe/webhook", content=payload, headers=_signed(payload, secret))
+    check("replayed payment is not credited twice", r.json().get("duplicate") is True and balance() == "1.000000", r.text[:80])
+    r = c.post("/stripe/webhook", content=payload, headers=_signed(payload, "whsec_wrong"))
+    check("forged webhook signature is rejected", r.status_code == 400, f"HTTP {r.status_code}")
+    other = _event(user["id"], session + "_other", 5000, purpose=None)
+    r = c.post("/stripe/webhook", content=other, headers=_signed(other, secret))
+    check("other products' sales are ignored", r.status_code == 200 and balance() == "1.000000", r.text[:80])
+
+    if stripe_key_set:
+        r = c.post("/v1/billing/checkout", json={"amount_usd": 5}, headers=user_auth)
+        url = r.json().get("checkout_url", "") if r.status_code == 200 else ""
+        check("checkout page can be opened", url.startswith("https://checkout.stripe.com/"),
+              "unpaid page, expires by itself" if url else f"HTTP {r.status_code}: {r.text[:160]}")
+    else:
+        print("SKIP  checkout page (STRIPE_SECRET_KEY is not set on the app yet)")
 
 
 def wait_until_ready(c: httpx.Client, admin: dict, providers: list[str], seconds: int) -> None:
