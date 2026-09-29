@@ -23,6 +23,7 @@ log = logging.getLogger("aiproxy.opossum")
 
 ONBOARDING_POLL_SECONDS = 300
 _LAST_ONBOARDING_POLL = [float("-inf")]
+_CHAIN_SELFTEST_DONE = [False]
 
 SANDBOX_RECIPIENTS = (
     ("north-coffee", "North Coffee (sandbox)", "dining"),
@@ -88,6 +89,19 @@ async def _integrations(services: Services) -> None:
             await chains.watch(services)
         except Exception:  # noqa: BLE001
             log.exception("chain watch failed")
+        if services.settings.opossum_chain_selftest_on_start and not _CHAIN_SELFTEST_DONE[0]:
+            # Once per start: prove the watcher works against each live chain, in the logs.
+            _CHAIN_SELFTEST_DONE[0] = True
+            try:
+                result = await chains.selftest(services)
+                for rail, r in result.items():
+                    if isinstance(r, dict):
+                        log.info("chain self-test %s: %s", rail, "ok" if r.get("ok") else "FAILED",
+                                 extra={"event": "chain_selftest", "rail": rail, **{k: v for k, v in r.items() if k != "label"}})
+                log.info("chain self-test done", extra={"event": "chain_selftest_done", "ofac_crypto_addresses": result.get("ofac_crypto_addresses_loaded"),
+                                                        "passed": sum(1 for r in result.values() if isinstance(r, dict) and r.get("ok"))})
+            except Exception:  # noqa: BLE001
+                log.exception("chain self-test failed")
     try:
         if await sanctions.due(services):
             await sanctions.refresh_ofac(services)

@@ -366,3 +366,103 @@ async def watch(services: Services) -> int:
             recipient.fees_due = (recipient.fees_due or Decimal("0")) + tx.opossum_fee
             settled += 1
     return settled
+
+
+# ---------------------------------------------------------------- live self-test
+
+
+async def _btc_samples(services: Services) -> list[tuple[str, int, str]]:
+    """Real, recently confirmed payments: (address, sats, txid) candidates."""
+    api = services.settings.opossum_btc_api.rstrip("/")
+    tip = int((await services.http.get(f"{api}/blocks/tip/height", timeout=15.0)).text.strip())
+    block = (await services.http.get(f"{api}/block-height/{tip - 3}", timeout=15.0)).text.strip()
+    txs = (await services.http.get(f"{api}/block/{block}/txs", timeout=15.0)).json()
+    found = []
+    for tx in txs[1:]:  # skip the coinbase
+        for out in tx.get("vout", []):
+            address = out.get("scriptpubkey_address")
+            if address and address.startswith("bc1q") and out.get("value", 0) > 0 and cu.is_btc_address(address):
+                found.append((address, int(out["value"]), tx["txid"]))
+                break
+    return found[:8]
+
+
+async def _usdc_sample(services: Services, network: str) -> tuple[str, int, str, int] | None:
+    """A real, recent USDC transfer: (to, atomic value, txid, block)."""
+    latest = await evm_block(services, network)
+    logs = await _rpc(services, network, "eth_getLogs", [{
+        "fromBlock": hex(latest - 40), "toBlock": hex(latest - 30), "address": EVM[network].usdc, "topics": [TRANSFER_TOPIC]}])
+    for entry in logs:
+        if len(entry.get("topics", [])) == 3 and int(entry["data"], 16) > 0 and not entry.get("removed"):
+            return cu.checksum_address("0x" + entry["topics"][2][-40:]), int(entry["data"], 16), entry["transactionHash"], int(entry["blockNumber"], 16)
+    return None
+
+
+async def selftest(services: Services, rails: list[str] | None = None) -> dict:
+    """Run the payment watcher against live chain data, without writing anything.
+
+    For each rail: find a real recent transfer on chain, treat it as if it
+    were an Opossum payment of exactly that amount to that address, and check
+    the watcher finds it with the right amount, transaction and confirmation
+    count; screen its sender against the loaded OFAC addresses; then sign a
+    receipt for it and verify the signature. No coins move and no rows change.
+    """
+    from types import SimpleNamespace
+
+    from .crypto import verify_presentation
+    from .sanctions import ADDRESS_LIST, screen_addresses
+    from .models import OpListMeta
+    from .web import keys
+
+    k = keys(services)
+    out: dict = {}
+    async with services.db.session() as session:
+        meta = await session.get(OpListMeta, ADDRESS_LIST)
+    out["ofac_crypto_addresses_loaded"] = meta.entries if meta else 0
+    for rail in rails or all_rails():
+        started = time.monotonic()
+        result: dict = {"label": rail_label(rail)}
+        try:
+            if rail == "btc":
+                result["btc_usd"] = str(await btc_usd(services))
+                seen = found = None
+                # A busy address's history is paged; use the first sample whose payment is on its first page.
+                for address, value, txid in await _btc_samples(services):
+                    tx = SimpleNamespace(rail="btc", deposit_address=address, crypto_amount=format(cu.from_atomic(value, BTC_DECIMALS), "f"), chain_from_block=None)
+                    seen = await _observe(services, tx, set())
+                    if seen is not None and txid in {p["txid"] for p in await btc_payments(services, address)}:
+                        found = True
+                        break
+                if not found:
+                    raise ValueError("the watcher did not see any sampled payment")
+            else:
+                network = rail.split("-", 1)[1]
+                sample = await _usdc_sample(services, network)
+                if sample is None:
+                    raise ValueError("no USDC transfer in the sampled blocks")
+                to, value, txid, block = sample
+                tx = SimpleNamespace(rail=rail, deposit_address=to, crypto_amount=format(cu.from_atomic(value, USDC_DECIMALS), "f"), chain_from_block=block - 1)
+                seen = await _observe(services, tx, set())
+                if seen is None:
+                    raise ValueError(f"watcher did not match {txid}")
+                found = seen["txid"].lower() == txid.lower() or seen["received"] == cu.from_atomic(value, USDC_DECIMALS)
+            async with services.db.session() as session:
+                listed = await screen_addresses(session, seen["senders"])
+            needed = required_confirmations(services.settings, rail)
+            claims = {"payment_method": "crypto", "chain": rail_label(rail), "crypto_asset": "BTC" if rail == "btc" else "USDC",
+                      "crypto_amount": tx.crypto_amount, "crypto_txid": seen["txid"], "deposit_address": tx.deposit_address}
+            sd_jwt, disclosures = k.issue_receipt(claims, {"iss": "opossum-relay", "iat": int(time.time()), "ver": 1, "test": True, "selftest": True})
+            verified = verify_presentation(sd_jwt + "~" + disclosures[4] + "~", k.jwks())
+            result.update({
+                "ok": bool(found and seen["complete"] and verified["disclosed"].get("crypto_txid") == seen["txid"]),
+                "sample_tx": seen["txid"], "to": tx.deposit_address, "amount": tx.crypto_amount,
+                "detected": True, "amount_matched": seen["complete"], "confirmations": seen["confirmations"],
+                "would_settle": seen["complete"] and seen["confirmations"] >= needed and not listed,
+                "confirmations_needed": needed, "sender_screened": seen["senders"][:3], "sanctions_hit": listed,
+                "receipt_signed_and_verified": True,
+            })
+        except (httpx.HTTPError, OpError, ValueError, KeyError, TypeError, IndexError) as exc:
+            result.update({"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]})
+        result["ms"] = int((time.monotonic() - started) * 1000)
+        out[rail] = result
+    return out

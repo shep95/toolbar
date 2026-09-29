@@ -225,6 +225,9 @@ async def due(services: Services) -> bool:
         return False
     async with services.db.session() as session:
         meta = await session.get(OpListMeta, LIST_NAME)
+        addresses = await session.get(OpListMeta, ADDRESS_LIST)
+    if addresses is None:
+        return True  # the crypto-address list has never been loaded (e.g. just upgraded)
     last = meta.checked_at if meta else None
     if last is None:
         return True

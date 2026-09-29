@@ -12,7 +12,7 @@ from decimal import Decimal
 
 import httpx
 import pytest
-from sqlalchemy import update
+from sqlalchemy import func, select, update
 
 from aiproxy.models import utcnow
 from aiproxy.opossum import chains, sanctions
@@ -63,6 +63,11 @@ class Chain:
 
     def _esplora(self, req):
         parts = req.url.path.split("/")
+        if req.url.host == "btc.test" and len(parts) == 4 and parts[2] == "block-height":
+            return httpx.Response(200, text="00" * 32)
+        if req.url.host == "btc.test" and len(parts) == 5 and parts[2] == "block" and parts[4] == "txs":
+            return httpx.Response(200, json=[{"txid": "coinbase", "vout": [{"scriptpubkey_address": PAYER_BTC, "value": 1}]}]
+                                  + [t for txs in self.btc_txs.values() for t in txs])
         if req.url.host == "btc.test" and len(parts) == 5 and parts[2] == "address" and parts[4] == "txs":
             return httpx.Response(200, json=self.btc_txs.get(parts[3], []))
         return httpx.Response(404, json={"error": "no fake handler for " + req.url.path})
@@ -73,7 +78,8 @@ class Chain:
             return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": hex(self.evm_tip)})
         f = body["params"][0]
         start, end = int(f["fromBlock"], 16), int(f["toBlock"], 16)
-        hits = [lg for lg in self.logs if lg["address"].lower() == f["address"].lower() and lg["topics"][2] == f["topics"][2]
+        to = f["topics"][2] if len(f["topics"]) > 2 else None
+        hits = [lg for lg in self.logs if lg["address"].lower() == f["address"].lower() and (to is None or lg["topics"][2] == to)
                 and start <= int(lg["blockNumber"], 16) <= end]
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": hits})
 
@@ -338,3 +344,31 @@ async def test_sender_screening_ignores_case_for_evm(app):
     async with app.state.services.db.session() as session:
         assert await sanctions.screen_addresses(session, ["0x7f367cc41522ce07553e823bf3be79a889debe1b"])
         assert not await sanctions.screen_addresses(session, [PAYER_EVM])
+
+
+async def test_ofac_refresh_is_due_until_crypto_addresses_are_loaded(app):
+    services = app.state.services
+    services.settings.opossum_ofac_enabled = True
+    try:
+        await sanctions.load_names(services, sanctions.LIST_NAME, ["SMITH, John"], "test")
+        assert await sanctions.due(services)  # names are fresh, but no address list yet
+        await sanctions.load_addresses(services, ["0x7F367cC41522cE07553e823bf3be79A889DEbe1B"], "test")
+        assert not await sanctions.due(services)
+    finally:
+        services.settings.opossum_ofac_enabled = False
+
+
+async def test_live_selftest_reads_real_chain_shapes_without_writing(app, client, chain):
+    chain.send_btc(SECOND, 150_000, txid="ee" * 32, height=chain.btc_tip - 3)
+    chain.send_usdc("base", MERCHANT_EVM, 12_340_000, txid="0x" + "0f" * 32, block=chain.evm_tip - 35)
+    r = await client.post("/admin/api/opossum/chains/selftest", headers=ADMIN)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    btc, base = out["btc"], out["usdc-base"]
+    assert btc["ok"] and btc["sample_tx"] == "ee" * 32 and btc["amount"] == "0.00150000" and btc["confirmations"] == 4
+    assert btc["would_settle"] and btc["receipt_signed_and_verified"] and btc["sender_screened"] == [PAYER_BTC]
+    assert base["ok"] and base["sample_tx"] == "0x" + "0f" * 32 and base["amount"] == "12.340000" and base["confirmations"] == 36
+    assert base["to"] == MERCHANT_EVM and base["would_settle"]
+    assert not out["usdc-polygon"]["ok"] and "polygon" in out["usdc-polygon"]["error"]  # no RPC configured in this test
+    async with app.state.services.db.session() as session:
+        assert (await session.scalar(select(func.count()).select_from(OpTransaction))) == 0

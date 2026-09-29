@@ -175,6 +175,8 @@ class Settings(BaseSettings):
     opossum_price_api: str = "https://api.coinbase.com/v2/prices/{pair}/spot"
     opossum_btc_confirmations: int = 2
     opossum_chain_quote_minutes: int = 30
+    # Once per start, check the watcher against live chain data (read-only) and log the result.
+    opossum_chain_selftest_on_start: bool = True
 
     log_level: str = "INFO"
 

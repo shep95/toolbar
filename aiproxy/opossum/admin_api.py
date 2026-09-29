@@ -261,6 +261,18 @@ async def recipient_chain(recipient_id: uuid.UUID, request: Request, services: S
     return await apply_chain_setup(services, keys(services), recipient_id, body)
 
 
+@router.post("/chains/selftest")
+async def chains_selftest(request: Request, services: Services = Depends(require_admin)):
+    """Run the payment watcher against live chain data (read-only; nothing is written)."""
+    from .chains import selftest
+
+    result = await selftest(services)
+    async with services.db.session() as session, session.begin():
+        await audit.append(session, _actor(request), "chain_selftest", None,
+                           ok=sorted(k for k, v in result.items() if isinstance(v, dict) and v.get("ok")))
+    return result
+
+
 @router.post("/recipients/{recipient_id}/fees-paid")
 async def fees_paid(recipient_id: uuid.UUID, body: dict, request: Request, services: Services = Depends(require_admin)):
     """Record that a recipient paid its billed on-chain fees."""
