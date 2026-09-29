@@ -8,6 +8,9 @@ The relay never holds or moves funds itself; an established processor does.
   that receives the payment minus Opossum's application fee. The recipient
   sees Opossum's transaction ID and the payer's pseudonym, not the payer's
   card or identity.
+* ``stripe`` with account ``platform``: the platform itself is the
+  recipient (the operator's own business). A plain Stripe Checkout payment,
+  no Connect needed; Opossum's fee is simply part of what the platform keeps.
 * ``sandbox``: settles instantly with test money so the whole flow can be
   tried. Every sandbox receipt carries ``"test": true``; nothing is paid.
 """
@@ -26,6 +29,8 @@ from .models import OpRecipient, OpTransaction
 log = logging.getLogger("aiproxy.opossum")
 
 PAYMENT_PURPOSE = "opossum_payment"
+# processor_account value meaning the platform's own Stripe account.
+PLATFORM_ACCOUNT = "platform"
 
 
 class ProcessorError(Exception):
@@ -59,7 +64,8 @@ async def _stripe_checkout(services: Services, tx: OpTransaction, recipient: OpR
     settings = services.settings
     if not settings.stripe_secret_key:
         raise ProcessorError("Stripe is not configured")
-    if not recipient.processor_account or not recipient.processor_account.startswith("acct_"):
+    direct = recipient.processor_account == PLATFORM_ACCOUNT
+    if not direct and (not recipient.processor_account or not recipient.processor_account.startswith("acct_")):
         raise ProcessorError("this recipient has not finished Stripe onboarding")
     application_fee = tx.opossum_fee + tx.processor_fee
     form = {
@@ -72,14 +78,15 @@ async def _stripe_checkout(services: Services, tx: OpTransaction, recipient: OpR
         # The recipient's name is shown to the payer; nothing about the payer
         # is sent here.
         "line_items[0][price_data][product_data][name]": f"Payment to {recipient.display_name}",
-        "payment_intent_data[application_fee_amount]": str(minor_units(application_fee)),
-        "payment_intent_data[transfer_data][destination]": recipient.processor_account,
         "payment_intent_data[description]": f"Opossum {tx.id}",
         "payment_intent_data[metadata][opossum_tx]": tx.id,
         "metadata[purpose]": PAYMENT_PURPOSE,
         "metadata[opossum_tx]": tx.id,
         "client_reference_id": tx.id,
     }
+    if not direct:
+        form["payment_intent_data[application_fee_amount]"] = str(minor_units(application_fee))
+        form["payment_intent_data[transfer_data][destination]"] = recipient.processor_account
     try:
         resp = await services.http.post(
             f"{settings.stripe_api_base}/checkout/sessions",

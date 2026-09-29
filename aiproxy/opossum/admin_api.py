@@ -11,6 +11,7 @@ forbids telling them).
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import uuid
 from datetime import datetime, timedelta
@@ -27,7 +28,8 @@ from ..countries import normalise_country
 from ..models import utcnow
 from ..services import Services
 from . import audit
-from .compliance import limits_for, normalise_name
+from .compliance import limits_for
+from .sanctions import key_for, screen
 from .crypto import random_id
 from .merchant import hash_merchant_key
 from .models import (
@@ -119,7 +121,16 @@ class RecipientIn(BaseModel):
     category: str = Field(default="general", max_length=40)
     country: str = "US"
     processor: Literal["sandbox", "stripe"] = "sandbox"
+    # A Stripe connected account (acct_...), or "platform" when the recipient is
+    # the operator's own business on the platform's Stripe account.
     processor_account: str | None = Field(default=None, max_length=64)
+
+    @field_validator("processor_account")
+    @classmethod
+    def _account(cls, v):
+        if v is not None and v != "platform" and not re.fullmatch(r"acct_[A-Za-z0-9]{6,60}", v):
+            raise ValueError("processor_account must be acct_... or platform")
+        return v
 
     @field_validator("handle")
     @classmethod
@@ -137,7 +148,7 @@ class RecipientIn(BaseModel):
 class RecipientPatch(BaseModel):
     display_name: str | None = Field(default=None, max_length=100)
     category: str | None = Field(default=None, max_length=40)
-    status: Literal["active", "review", "disabled"] | None = None
+    status: Literal["active", "review", "disabled", "onboarding"] | None = None
     processor_account: str | None = Field(default=None, max_length=64)
 
 
@@ -162,7 +173,7 @@ async def create_recipient(body: RecipientIn, request: Request, services: Servic
     async with services.db.session() as session, session.begin():
         if await session.scalar(select(OpRecipient.id).where(OpRecipient.handle == body.handle)):
             raise OpError(409, "handle_taken", "that handle is taken")
-        hit = await session.scalar(select(OpScreeningEntry.list_name).where(OpScreeningEntry.normalized_name == normalise_name(body.display_name)))
+        hit = await screen(session, body.display_name)
         r = OpRecipient(handle=body.handle, display_name=body.display_name, category=body.category, country=body.country,
                         processor=body.processor, processor_account=body.processor_account, status="review" if hit else "active")
         session.add(r)
@@ -231,8 +242,65 @@ async def stripe_onboarding(recipient_id: uuid.UUID, request: Request, services:
     async with services.db.session() as session, session.begin():
         row = await session.get(OpRecipient, recipient_id)
         row.processor, row.processor_account = "stripe", account
+        if row.status == "active":
+            row.status = "onboarding"  # takes payments once Stripe says charges and payouts are enabled
         await audit.append(session, _actor(request), "recipient_stripe_onboarding", row.handle)
     return {"account": account, "onboarding_url": link.json().get("url")}
+
+
+@router.post("/recipients/{recipient_id}/check-onboarding")
+async def check_onboarding(recipient_id: uuid.UUID, request: Request, services: Services = Depends(require_admin)):
+    """Ask Stripe whether the connected account can take payments yet."""
+    from .processors import PLATFORM_ACCOUNT, ProcessorError
+    from .stripe_ops import account_ready
+
+    async with services.db.session() as session:
+        r = await session.get(OpRecipient, recipient_id)
+    if r is None or r.processor != "stripe" or not r.processor_account or r.processor_account == PLATFORM_ACCOUNT:
+        raise OpError(400, "not_connect", "this recipient is not a Stripe Connect account")
+    try:
+        ready, detail = await account_ready(services, r.processor_account)
+    except ProcessorError as exc:
+        raise OpError(502, "stripe_error", exc.message) from None
+    async with services.db.session() as session, session.begin():
+        row = await session.get(OpRecipient, recipient_id)
+        if ready and row.status == "onboarding":
+            row.status = "active"
+            await audit.append(session, _actor(request), "recipient_ready", row.handle)
+    return {"ready": ready, "detail": detail, "status": row.status}
+
+
+@router.post("/transactions/{tx_id}/refund")
+async def refund_transaction(tx_id: str, request: Request, body: dict | None = None, services: Services = Depends(require_admin)):
+    """Refund a settled payment in full through its processor."""
+    from .relay import refund_payment
+
+    reason = str((body or {}).get("reason") or "refunded by operator")[:120]
+    tx = await refund_payment(services, keys(services), tx_id, actor=_actor(request), reason=reason)
+    return {"id": tx.id, "status": tx.status, "refund": tx.refund_ref}
+
+
+@router.get("/sanctions")
+async def sanctions_status(services: Services = Depends(require_admin)):
+    from .models import OpListMeta
+
+    async with services.db.session() as session:
+        rows = (await session.execute(select(OpListMeta))).scalars().all()
+    return {"auto_refresh": services.settings.opossum_ofac_enabled, "refresh_hours": services.settings.opossum_ofac_refresh_hours,
+            "lists": [{"list": m.list_name, "source": m.source, "entries": m.entries,
+                       "loaded_at": aware(m.loaded_at).isoformat() if m.loaded_at else None,
+                       "checked_at": aware(m.checked_at).isoformat() if m.checked_at else None, "last_error": m.last_error} for m in rows]}
+
+
+@router.post("/sanctions/refresh")
+async def sanctions_refresh(request: Request, services: Services = Depends(require_admin)):
+    """Download the OFAC SDN list now and re-screen everyone."""
+    from .sanctions import refresh_ofac
+
+    result = await refresh_ofac(services)
+    if not result["ok"]:
+        raise OpError(502, "list_unavailable", "could not load the OFAC list: " + result["error"][:200])
+    return result
 
 
 # ---------------------------------------------------------------- fees
@@ -375,7 +443,7 @@ async def screening(services: Services = Depends(require_admin)):
 
 @router.post("/screening", status_code=201)
 async def add_screening(body: ScreeningIn, request: Request, services: Services = Depends(require_admin)):
-    names = {normalise_name(n) for n in body.names if normalise_name(n)}
+    names = {key_for(n) for n in body.names if " " in key_for(n)}
     async with services.db.session() as session, session.begin():
         for name in names:
             session.add(OpScreeningEntry(normalized_name=name[:200], list_name=body.list_name))

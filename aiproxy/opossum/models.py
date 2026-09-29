@@ -50,6 +50,10 @@ class OpAccount(Base):
     kyc_status: Mapped[str] = mapped_column(String(16), nullable=False, default="none")
     kyc_note: Mapped[str | None] = mapped_column(String(200))
     kyc_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Opaque reference sent to the identity-verification provider instead of
+    # the account ID, and the provider's session ID.
+    kyc_ref: Mapped[str | None] = mapped_column(String(40))
+    kyc_provider_ref: Mapped[str | None] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # After closing, identity is kept only as long as the law requires.
@@ -110,6 +114,9 @@ class OpRecipient(Base):
     api_key_hash: Mapped[str | None] = mapped_column(String(64), unique=True)
     api_key_prefix: Mapped[str | None] = mapped_column(String(16))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    # The merchant's endpoint for signed payment events, and its signing secret (encrypted).
+    webhook_url: Mapped[str | None] = mapped_column(String(300))
+    webhook_secret_enc: Mapped[str | None] = mapped_column(Text)
 
 
 class OpInvoice(Base):
@@ -161,6 +168,10 @@ class OpTransaction(Base):
     retain_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     # The signed receipt (SD-JWT) and the holder's disclosures, encrypted.
     receipt_enc: Mapped[str | None] = mapped_column(Text)
+    # Stripe PaymentIntent behind a Checkout Session, needed for refunds.
+    processor_payment: Mapped[str | None] = mapped_column(String(80))
+    refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    refund_ref: Mapped[str | None] = mapped_column(String(80))
 
 
 class OpFeeRule(Base):
@@ -293,3 +304,33 @@ class OpIdempotency(Base):
     tx_id: Mapped[str] = mapped_column(String(40), nullable=False)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class OpListMeta(Base):
+    """When each screening list was last loaded, from where, and how big it is."""
+
+    __tablename__ = "op_list_meta"
+
+    list_name: Mapped[str] = mapped_column(String(80), primary_key=True)
+    source: Mapped[str] = mapped_column(String(300), nullable=False)
+    entries: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    loaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(300))
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class OpWebhookDelivery(Base):
+    """Outbox of signed events for merchants' systems, retried with backoff."""
+
+    __tablename__ = "op_webhook_deliveries"
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    event_id: Mapped[str] = mapped_column(String(40), unique=True, nullable=False)
+    recipient_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("op_recipients.id", ondelete="CASCADE"), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

@@ -202,12 +202,14 @@ Opossum keeps routine payments private from *recipients*. It does not evade KYC,
 - **Per jurisdiction** (admin, `op_jurisdictions`): unverified per-payment and 24-hour limits, the verified per-payment limit, retention days, and a blocked flag. Defaults come from configuration. Limits apply to nominal amounts in the payment currency; the MVP does no FX conversion.
 - **Sanctions:**
   - Blocked countries (`OPOSSUM_BLOCKED_COUNTRIES`, default CU, IR, KP, SY) apply to payers and recipients.
-  - Name screening runs against lists the operator loads. The built-in list is empty; a real sanctions data provider must be connected before going live.
-  - A match puts the account or recipient into review, and payments pause.
+  - The official **OFAC SDN list** is downloaded automatically, with its alternate names, and refreshed daily (see §9a). Other lists (UN, EU, UK) can be loaded through the admin API.
+  - After each refresh every identity and recipient is re-screened.
+  - A match puts the account or recipient into review, and payments pause until a person decides.
 - **Identity:**
   - Real-money payments need at least a self-attested identity in the vault.
   - Verified status raises limits.
-  - Compliance staff open an identity for review from the admin; each opening is recorded in the audit chain.
+  - A user can verify with **Stripe Identity** (document and live capture, optionally a selfie). Stripe sees the document; Opossum gets only verified or not, with an opaque reference (see §9a).
+  - Compliance staff can still open an identity for review from the admin; each opening is recorded in the audit chain.
   - Recipients are verified by Stripe Connect onboarding.
 - **Legal disclosure:** a case records the legal basis, the reference, the authority, the scope, and whether the user may be told (now, later, or prohibited by the order).
   - Disclosure needs an open case and discloses **only the listed fields** about the payer of **one** transaction. Fields available are: legal name, email, address, date of birth, phone, identity status, account ID, device ID, and the account's payments in a date range.
@@ -229,11 +231,13 @@ This design is not legal advice. Whether operating it requires a money transmitt
 | `OPOSSUM_UNVERIFIED_TX_LIMIT`, `OPOSSUM_UNVERIFIED_DAILY_LIMIT`, `OPOSSUM_VERIFIED_TX_LIMIT`, `OPOSSUM_RETENTION_DAYS` | `500`, `1000`, `10000`, `1825` | defaults where no jurisdiction row exists |
 | `OPOSSUM_BLOCKED_COUNTRIES` | `CU,IR,KP,SY` | review against the programmes that apply to you |
 | `OPOSSUM_PAYMENTS_PER_HOUR` | `20` | per account |
+| `OPOSSUM_OFAC_ENABLED` / `OPOSSUM_OFAC_REFRESH_HOURS` | `true` / `24` | automatic OFAC SDN list |
+| `OPOSSUM_STRIPE_IDENTITY` / `OPOSSUM_IDENTITY_SELFIE` | `true` / `false` | identity checks through Stripe Identity |
 
 ### Real money with Stripe Connect
 
 1. In the Stripe dashboard, enable **Connect** (platform profile, Express accounts).
-2. Keep the existing webhook (`/stripe/webhook`) and add the **`checkout.session.expired`** event to it. Opossum payments share it, recognised by `metadata.purpose = opossum_payment`.
+2. Keep the existing webhook (`/stripe/webhook`) with the events listed in §9a. Opossum payments share it, recognised by `metadata.purpose = opossum_payment`.
 3. In `/admin` → **opossum**:
    - add a recipient with processor *stripe connect*;
    - click **stripe onboarding**; the merchant completes Stripe's identity and bank checks;
@@ -241,6 +245,58 @@ This design is not legal advice. Whether operating it requires a money transmitt
 4. The merchant uses the merchant API:
    - `GET /opossum/merchant/api/payments` shows their view of payments;
    - `POST /opossum/merchant/api/invoices` creates an invoice; the customer pays it at `/opossum#pay/invoice/<id>`.
+
+## 9a. Integrations with outside systems
+
+### Stripe: real money
+
+- **Your own business as a recipient.** Create a recipient with processor **stripe** and Stripe account **platform**. Payments are plain Checkout charges to the platform's Stripe account; no Connect needed. The Opossum fee is part of what you keep.
+- **Other businesses.** Create a recipient with processor stripe, then click **stripe onboarding**. Stripe Connect Express verifies the business and its bank. The recipient stays in *onboarding* and is not listed until Stripe reports that charges and payouts are enabled. The relay checks every 5 minutes, or on **check stripe**. This needs Connect enabled on the platform account.
+- **Refunds.**
+  - From the admin (**refund** on a relay payment) or the merchant API (`POST /opossum/merchant/api/payments/{id}/refund`).
+  - A Connect refund also reverses the transfer and Opossum's application fee, so nobody keeps money for an undone payment.
+  - A refund made directly in the Stripe dashboard arrives as `charge.refunded` and is mirrored.
+- **Webhook.** The existing endpoint `/stripe/webhook` now handles these events:
+  - `checkout.session.completed`
+  - `checkout.session.async_payment_succeeded`
+  - `checkout.session.expired`
+  - `charge.refunded`
+  - `identity.verification_session.verified`
+  - `identity.verification_session.requires_input`
+  - `identity.verification_session.canceled`
+
+### Stripe Identity
+
+The **privacy** room shows **verify with stripe identity** once a legal name and address are saved. Stripe's hosted page checks the document (live capture; set `OPOSSUM_IDENTITY_SELFIE=true` to also require a matching selfie). The signed webhook then marks the account verified, which raises the payment limit. A sanctions match still wins: a verified person on the list stays in review. Identity must be activated in the Stripe dashboard; until it is, the app says so.
+
+### OFAC sanctions list
+
+- **Source:** `SDN.CSV` and `ALT.CSV` from OFAC's Sanctions List Service, with the older treasury.gov paths as fallback.
+- **Refresh:** within a minute of start-up, then every `OPOSSUM_OFAC_REFRESH_HOURS` (24); or on demand with **refresh now** in the admin.
+- **Safety on failure:** a failed or suspiciously small download never replaces the loaded list, and the error is shown in the admin.
+- **Matching:** names become sets of words, ignoring case, accents, punctuation and initials. A listed name matches when all of its words (two or more) appear in the person's name in any order. This is a filter for human review, not a verdict.
+
+### Merchants' systems: signed webhooks
+
+A merchant sets an endpoint with `PUT /opossum/merchant/api/webhook {"url": "https://…"}`; the signing secret is returned once.
+
+- **Events:** `payment.settled`, `payment.refunded`, `invoice.paid`, `webhook.test`.
+- **Delivery:** events are written to an outbox in the same transaction as the payment, then delivered with backoff (10 s up to 12 h, 8 attempts).
+- **What they carry:** only the recipient's view of the payment.
+- **Address guard:** endpoints must be public https; private, loopback, link-local and reserved addresses are refused, and redirects are not followed.
+
+Verify a delivery like this:
+
+```python
+import hmac, hashlib
+t, v1 = (part.split("=", 1)[1] for part in request.headers["Opossum-Signature"].split(","))
+expected = hmac.new(secret.encode(), t.encode() + b"." + request.body, hashlib.sha256).hexdigest()
+assert hmac.compare_digest(expected, v1)   # and reject if int(t) is more than a few minutes old
+```
+
+### Accounting software and banks
+
+The ledger exports reports as **OFX 1.02** (imported by QuickBooks, Xero, Quicken, Moneydance and GnuCash) and **QIF** (Quicken), besides CSV, XLSX, PDF and JSON. It imports bank statements as **OFX/QFX** (what most banks offer as "download for Quicken/QuickBooks") or CSV. OFX imports skip transactions already imported, using the bank's FITID. All of this happens on the device.
 
 ## 10. API summary
 
@@ -254,13 +310,15 @@ User API (`/opossum/api`, session cookie plus `X-Opossum-Request: 1` on writes):
 | GET | `/me`, `/devices`, `/identity`, `/backup`, `/payments`, `/payments/{id}`, `/disclosures` | the account's own data |
 | POST / PUT / DELETE | `/mfa/setup`, `/mfa/confirm`, `/mfa/disable`, `/devices`, `/devices/{id}`, `/identity`, `/backup`, `/backup/keys`, `/account/close` | account management |
 | POST | `/payments` | a signed payment (`X-Opossum-Device`, `X-Opossum-Signature`) |
+| POST | `/identity/verify` | start a Stripe Identity check; returns the hosted verification URL |
 
-Merchant API (`/opossum/merchant/api`, `Authorization: Bearer opm_…`): `GET /me`, `GET /payments`, `GET/POST /invoices`.
+Merchant API (`/opossum/merchant/api`, `Authorization: Bearer opm_…`): `GET /me`, `GET /payments`, `POST /payments/{id}/refund`, `GET/POST /invoices`, `GET/PUT /webhook`.
 
 Compliance API (`/admin/api/opossum`, admin sign-in):
 
 - `overview`, `transactions`
-- `recipients` (plus `merchant-key` and `stripe-onboarding`)
+- `recipients` (plus `merchant-key`, `stripe-onboarding` and `check-onboarding`)
+- `transactions/{id}/refund`, `sanctions`, `sanctions/refresh`
 - `fee-rules`, `jurisdictions`, `screening`
 - `kyc`, `cases` (plus `disclose` and `close`)
 - `audit`, `audit/verify`, `limits/{country}`
@@ -271,6 +329,6 @@ Compliance API (`/admin/api/opossum`, admin sign-in):
 - **Processor.** Stripe Connect is the only real-money processor. There is no bank-transfer rail and no crypto, by design for the MVP.
 - **FX.** No currency conversion: totals and limits are per currency.
 - **Payees.** Payments go to onboarded recipients (merchants and payees). Person-to-person transfers between users and receiving money into Opossum are not in the MVP.
-- **Refunds and disputes.** These are handled in Stripe; there is no refund button in Opossum yet.
-- **Identity verification.** This is manual review in the admin. A document or biometric verification provider can be connected later.
+- **Refunds and disputes.** Refunds are full refunds only. Disputes (chargebacks) are handled in the Stripe dashboard.
+- **Sanctions lists.** OFAC is loaded automatically. UN, EU and UK lists must be loaded through the admin API if you operate there. Matching is word-based, not phonetic.
 - **Relay trust.** The relay operator, holding the master key, can technically link a payment to an account; that link is needed for fraud, disputes and the law. Routine staff views do not show it, opening it is recorded, and recipients never get it. Opossum does not claim otherwise.

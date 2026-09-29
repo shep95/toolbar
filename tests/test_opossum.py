@@ -357,7 +357,7 @@ async def test_duplicate_guard_and_limits(client, ready):
 
 
 async def test_real_money_needs_identity_and_blocked_countries(client, ready, upstream):
-    await admin_create_recipient(client, processor="stripe", processor_account="acct_123")
+    await admin_create_recipient(client, processor="stripe", processor_account="acct_1TestConnect0001")
     r = await ready.pay(recipient="acme-store", amount="10.00")
     assert r.json()["error"]["code"] == "identity_required"
     blocked = User(client, country="KP")
@@ -367,14 +367,14 @@ async def test_real_money_needs_identity_and_blocked_countries(client, ready, up
 
 
 async def test_stripe_connect_checkout_and_webhook_settlement(client, ready, upstream):
-    await admin_create_recipient(client, processor="stripe", processor_account="acct_123")
+    await admin_create_recipient(client, processor="stripe", processor_account="acct_1TestConnect0001")
     await ready.set_identity()
     upstream.on("/v1/checkout/sessions", lambda req: httpx.Response(200, json={"id": "cs_test_1", "url": "https://checkout.stripe.com/c/pay/cs_test_1"}))
     r = await ready.pay(recipient="acme-store", amount="50.00")
     tx = r.json()
     assert r.status_code == 200 and tx["status"] == "pending_payment" and tx["checkout_url"].startswith("https://checkout.stripe.com/")
     form = dict(x.split("=", 1) for x in upstream.requests[-1].content.decode().split("&"))
-    assert form["payment_intent_data%5Btransfer_data%5D%5Bdestination%5D"] == "acct_123"
+    assert form["payment_intent_data%5Btransfer_data%5D%5Bdestination%5D"] == "acct_1TestConnect0001"
     assert form["payment_intent_data%5Bapplication_fee_amount%5D"] == str(150 + 175)  # 3% + (2.9% + 0.30)
     assert not any(ready.email.split("@")[0] in v for v in form.values())
 

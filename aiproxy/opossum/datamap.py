@@ -61,6 +61,20 @@ DATA_MAP = {
             "required": "yes: fraud prevention, disputes and the law require that payments can be traced when legally demanded",
         },
         {
+            "data": "identity document and selfie (only if you choose automatic verification)",
+            "stored": "at Stripe Identity, never at Opossum; Opossum receives only verified or not, with an opaque reference",
+            "visible_to": ["Stripe Identity", "authorities_with_legal_order"],
+            "retention": "Stripe's own policy for identity verifications",
+            "required": "no; it raises your payment limits",
+        },
+        {
+            "data": "your legal name, compared with sanctions lists",
+            "stored": "checked on the relay against the official OFAC list, refreshed daily; a match sends the account to human review",
+            "visible_to": ["opossum_relay (automated)", "compliance staff on a match"],
+            "retention": "no separate copy is kept",
+            "required": "yes, sanctions law",
+        },
+        {
             "data": "card or bank details",
             "stored": "at the payment processor (Stripe), never at Opossum",
             "visible_to": ["payment_processor", "your bank", "authorities_with_legal_order"],

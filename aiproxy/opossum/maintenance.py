@@ -8,6 +8,7 @@ once no record needs it; sessions, nonces and idempotency keys expire.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import timedelta
 
 from sqlalchemy import delete, select, update
@@ -19,6 +20,9 @@ from .models import OpAccount, OpIdentity, OpRecipient, OpTransaction
 from .web import purge
 
 log = logging.getLogger("aiproxy.opossum")
+
+ONBOARDING_POLL_SECONDS = 300
+_LAST_ONBOARDING_POLL = [float("-inf")]
 
 SANDBOX_RECIPIENTS = (
     ("north-coffee", "North Coffee (sandbox)", "dining"),
@@ -32,6 +36,7 @@ async def run(services: Services) -> None:
     if services.settings.opossum_master_key is None:
         return
     await purge(services)
+    await _integrations(services)
     now = utcnow()
     async with services.db.session() as session, session.begin():
         # A payment stuck before reaching the processor is marked failed.
@@ -62,3 +67,40 @@ async def seed_sandbox(services: Services) -> None:
             session.add(OpRecipient(handle=handle, display_name=name, category=category, country="US", processor="sandbox"))
         await audit.append(session, "system", "sandbox_recipients_seeded", None, count=len(SANDBOX_RECIPIENTS))
     log.info("opossum sandbox recipients created")
+
+
+async def _integrations(services: Services) -> None:
+    """Merchant webhooks, the OFAC list, and Stripe Connect onboarding. Each is
+    isolated so one failing outside system never stops the others."""
+    from . import sanctions, webhooks
+    from .processors import PLATFORM_ACCOUNT, ProcessorError
+    from .stripe_ops import account_ready
+    from .web import keys
+
+    try:
+        await webhooks.deliver(services, keys(services))
+    except Exception:  # noqa: BLE001 - keep the loop alive
+        log.exception("webhook delivery failed")
+    try:
+        if await sanctions.due(services):
+            await sanctions.refresh_ofac(services)
+    except Exception:  # noqa: BLE001
+        log.exception("OFAC refresh failed")
+    if not services.settings.stripe_secret_key or time.monotonic() - _LAST_ONBOARDING_POLL[0] < ONBOARDING_POLL_SECONDS:
+        return
+    _LAST_ONBOARDING_POLL[0] = time.monotonic()
+    async with services.db.session() as session:
+        pending = (await session.execute(select(OpRecipient).where(
+            OpRecipient.status == "onboarding", OpRecipient.processor == "stripe",
+            OpRecipient.processor_account.is_not(None), OpRecipient.processor_account != PLATFORM_ACCOUNT).limit(20))).scalars().all()
+    for recipient in pending:
+        try:
+            ready, _ = await account_ready(services, recipient.processor_account)
+        except ProcessorError:
+            continue
+        if ready:
+            async with services.db.session() as session, session.begin():
+                row = await session.get(OpRecipient, recipient.id)
+                if row.status == "onboarding":
+                    row.status = "active"
+                    await audit.append(session, "system", "recipient_ready", row.handle)

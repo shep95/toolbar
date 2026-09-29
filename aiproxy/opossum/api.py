@@ -23,7 +23,7 @@ from ..countries import normalise_country
 from ..models import utcnow
 from ..services import Services, get_services
 from . import audit
-from .compliance import screen_name
+from .sanctions import screen as screen_name
 from .crypto import (
     ReceiptInvalid,
     b64u_decode,
@@ -567,6 +567,61 @@ async def put_identity(body: Identity, ctx=Depends(current_account)):
         await audit.append(session, f"account:{k.owner_tag(acct.id)[:12]}", "identity_updated", None)
         status = acct.kyc_status
     return {"identity": doc, "kyc_status": status}
+
+
+@router.post("/identity/verify")
+async def start_identity_check(request: Request, ctx=Depends(current_account)):
+    """Start a Stripe Identity document check. Stripe sees the document; the
+    relay sends only an opaque reference and records the outcome."""
+    from .stripe_ops import identity_session
+    from .processors import ProcessorError
+
+    services, account = ctx
+    k = keys(services)
+    if not (services.settings.opossum_stripe_identity and services.settings.stripe_secret_key):
+        raise OpError(503, "identity_checks_off", "automatic identity checks are not switched on here")
+    if account.kyc_status == "verified":
+        raise OpError(409, "already_verified", "your identity is already verified")
+    if account.kyc_status == "none":
+        raise OpError(409, "identity_required", "save your legal name and address first")
+    reference = random_id("kyc_", 12)
+    try:
+        session_info = await identity_session(services, reference=reference, return_url=f"{base_url(request)}/opossum#privacy")
+    except ProcessorError as exc:
+        message = exc.message
+        if "identity" in message.lower() and ("activ" in message.lower() or "not enabled" in message.lower()):
+            message = "identity checks are not activated for this Stripe account yet"
+        raise OpError(502, "identity_provider_error", message) from None
+    async with services.db.session() as session, session.begin():
+        row = await session.get(OpAccount, account.id)
+        row.kyc_ref, row.kyc_provider_ref = reference, session_info["id"]
+        await audit.append(session, f"account:{k.owner_tag(row.id)[:12]}", "identity_check_started", None, provider="stripe_identity")
+    return {"url": session_info["url"]}
+
+
+async def identity_result(services: Services, event_type: str, obj: dict) -> dict:
+    """Stripe Identity webhook: verified raises limits; anything else leaves a note."""
+    reference = str((obj.get("metadata") or {}).get("opossum_ref") or "")[:40]
+    if not reference:
+        return {"received": True, "ignored": "not an opossum identity check"}
+    k = keys(services)
+    async with services.db.session() as session, session.begin():
+        account = await session.scalar(select(OpAccount).where(OpAccount.kyc_ref == reference))
+        if account is None or account.kyc_provider_ref != obj.get("id"):
+            return {"received": True, "ignored": "unknown identity check"}
+        if event_type == "identity.verification_session.verified" and obj.get("status") == "verified":
+            if account.kyc_status != "review":  # a sanctions match still needs a human decision
+                account.kyc_status = "verified"
+            account.kyc_note = "stripe identity " + str(obj.get("id"))[:60]
+            outcome = "verified"
+        else:
+            error = (obj.get("last_error") or {}).get("code") or obj.get("status") or event_type.rsplit(".", 1)[-1]
+            account.kyc_note = f"stripe identity: {error}"[:200]
+            outcome = str(error)
+        account.kyc_updated_at = utcnow()
+        await audit.append(session, "stripe_identity", "identity_check_result", None, outcome=outcome[:60],
+                           account_ref=k.owner_tag(account.id)[:12])
+    return {"received": True, "identity": outcome}
 
 
 @router.get("/backup")

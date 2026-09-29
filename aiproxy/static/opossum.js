@@ -276,7 +276,7 @@
   }
   const L = () => S.ledger;
   const baseCurrency = () => (S.ledger && S.ledger.settings.currency) || 'USD';
-  const live = (e) => e.status !== 'failed' && e.status !== 'cancelled' && !L().deleted[e.id];
+  const live = (e) => e.status !== 'failed' && e.status !== 'cancelled' && e.status !== 'refunded' && !L().deleted[e.id];
   const inBase = (e) => (e.currency || baseCurrency()) === baseCurrency();
 
   function suggestCategory(merchant, kind, recipientCategory) {
@@ -519,6 +519,7 @@
   function statusTag(e) {
     if (e.test) return h('span', { class: 'tag test' }, 'test money');
     if (e.status === 'pending_payment') return h('span', { class: 'tag' }, 'pending');
+    if (e.status === 'refunded') return h('span', { class: 'tag' }, 'refunded');
     if (e.status === 'failed' || e.status === 'cancelled') return h('span', { class: 'tag alarm' }, e.status);
     if (e.receipt) return h('span', { class: 'tag trust' }, 'signed');
     return '';
@@ -738,7 +739,9 @@
     e.target.value = '';
     if (!file) return;
     if (file.size > 2_000_000) throw new Error('that file is larger than 2 MB');
-    const table = parseCsv(await file.text());
+    const text = await file.text();
+    if (/\.(ofx|qfx)$/i.test(file.name) || /<OFX>/i.test(text)) { importOfx(text); return; }
+    const table = parseCsv(text);
     const head = table[0].map((x) => x.trim().toLowerCase());
     const col = (names) => head.findIndex((x) => names.some((n) => x.includes(n)));
     const di = col(['date']), mi = col(['description', 'merchant', 'payee', 'name', 'details']), ai = col(['amount', 'value']);
@@ -757,6 +760,38 @@
     changed();
     toast('imported ' + added + ' entries. they stay on this device.', 'trust');
   }));
+
+  // OFX / QFX bank statements (what most banks offer as "download for quicken / quickbooks")
+  function parseOfx(text) {
+    const out = [];
+    for (const block of text.split(/<STMTTRN>/i).slice(1)) {
+      const body = block.split(/<\/STMTTRN>/i)[0];
+      const field = (name) => { const m = body.match(new RegExp('<' + name + '>([^<\\r\\n]*)', 'i')); return m ? m[1].trim() : ''; };
+      const posted = field('DTPOSTED');
+      const amount = field('TRNAMT');
+      if (!/^\d{8}/.test(posted) || !/^[-+]?\d+(\.\d+)?$/.test(amount)) continue;
+      const unescape = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+      out.push({ date: posted.slice(0, 4) + '-' + posted.slice(4, 6) + '-' + posted.slice(6, 8), amount, fitid: field('FITID'),
+        name: unescape(field('NAME') || field('PAYEE') || field('MEMO') || 'bank transaction'), memo: unescape(field('MEMO')) });
+    }
+    return out;
+  }
+  function importOfx(text) {
+    const known = new Set(L().entries.map((e) => e.fitid).filter(Boolean));
+    let added = 0, skipped = 0;
+    for (const t of parseOfx(text)) {
+      if (t.fitid && known.has(t.fitid)) { skipped++; continue; }
+      const kind = t.amount.startsWith('-') ? 'expense' : 'income';
+      const amount = parseMoney(t.amount.replace(/^[-+]/, ''));
+      if (!amount) continue;
+      const merchant = t.name.slice(0, 80);
+      addEntry({ date: t.date, kind, merchant, amount, note: t.memo && t.memo !== t.name ? t.memo.slice(0, 300) : '',
+        category: suggestCategory(merchant, kind), auto: true, source: 'import', fitid: t.fitid || undefined });
+      added++;
+    }
+    changed();
+    toast('imported ' + added + ' transactions' + (skipped ? ' (' + skipped + ' already in your ledger)' : '') + '. they stay on this device.', 'trust');
+  }
 
   // ------------------------------------------------------------ budgets
   renderers.budgets = () => {
@@ -854,7 +889,7 @@
       summary = 'opening balance ' + fmt(opening) + ' · closing balance ' + fmt(opening + income - out) + ' · ' + summary;
     }
     if (kind === 'reimbursement') summary += ' · still owed to you ' + fmt(sum(inBaseList.filter((e) => !e.reimbursed)));
-    return { title: REPORTS[kind] + ' · ' + from + ' to ' + to, kind, from, to, columns, rows: data, summary, generated: new Date().toISOString() };
+    return { title: REPORTS[kind] + ' · ' + from + ' to ' + to, kind, from, to, columns, rows: data, summary, generated: new Date().toISOString(), entries: pick };
   }
   let lastReport = null;
   function reportFromForm() {
@@ -894,10 +929,36 @@
     if (!r) return;
     const kind = btn.dataset.export;
     if (kind === 'csv') download(fileBase(r) + '.csv', 'text/csv', toCsv(r));
-    else if (kind === 'json') download(fileBase(r) + '.json', 'application/json', JSON.stringify(r, null, 2));
+    else if (kind === 'json') download(fileBase(r) + '.json', 'application/json', JSON.stringify({ ...r, entries: undefined }, null, 2));
+    else if (kind === 'ofx') download(fileBase(r) + '.ofx', 'application/x-ofx', toOfx(r));
+    else if (kind === 'qif') download(fileBase(r) + '.qif', 'application/qif', toQif(r));
     else if (kind === 'xlsx') download(fileBase(r) + '.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', xlsx(r));
     else if (kind === 'pdf') printReport(r);
   })));
+  // OFX 1.02 (SGML): imported by QuickBooks, Xero, Quicken, Moneydance and GnuCash
+  function toOfx(r) {
+    const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/[\r\n]+/g, ' ');
+    const d8 = (iso) => iso.replace(/-/g, '');
+    const list = r.entries.filter(inBase);
+    const signed = (e) => (e.kind === 'income' ? '' : '-') + fromCents(cents(e.amount));
+    const closing = balances().reduce((a, x) => a + x.balance, 0);
+    const tx = list.map((e) => ['<STMTTRN>', '<TRNTYPE>' + (e.kind === 'income' ? 'CREDIT' : e.kind === 'transfer' ? 'XFER' : 'DEBIT'),
+      '<DTPOSTED>' + d8(e.date), '<TRNAMT>' + signed(e), '<FITID>' + esc(e.tx_id || e.id), '<NAME>' + esc(e.merchant).slice(0, 32),
+      '<MEMO>' + esc([e.category, e.note].filter(Boolean).join(' · ')).slice(0, 255), '</STMTTRN>'].join('\r\n')).join('\r\n');
+    const now = d8(today()) + '120000';
+    return ['OFXHEADER:100', 'DATA:OFXSGML', 'VERSION:102', 'SECURITY:NONE', 'ENCODING:USASCII', 'CHARSET:1252', 'COMPRESSION:NONE', 'OLDFILEUID:NONE', 'NEWFILEUID:NONE', '',
+      '<OFX>', '<SIGNONMSGSRSV1><SONRS><STATUS><CODE>0<SEVERITY>INFO</STATUS><DTSERVER>' + now + '<LANGUAGE>ENG</SONRS></SIGNONMSGSRSV1>',
+      '<BANKMSGSRSV1><STMTTRNRS><TRNUID>1<STATUS><CODE>0<SEVERITY>INFO</STATUS><STMTRS><CURDEF>' + baseCurrency(),
+      '<BANKACCTFROM><BANKID>000000000<ACCTID>OPOSSUM-LEDGER<ACCTTYPE>CHECKING</BANKACCTFROM>',
+      '<BANKTRANLIST><DTSTART>' + d8(r.from) + '<DTEND>' + d8(r.to), tx, '</BANKTRANLIST>',
+      '<LEDGERBAL><BALAMT>' + fromCents(closing) + '<DTASOF>' + now + '</LEDGERBAL>', '</STMTRS></STMTTRNRS></BANKMSGSRSV1>', '</OFX>', ''].join('\r\n');
+  }
+  function toQif(r) {
+    const us = (iso) => iso.slice(5, 7) + '/' + iso.slice(8, 10) + '/' + iso.slice(0, 4);
+    const clean = (s) => String(s || '').replace(/[\r\n^]+/g, ' ');
+    return '!Type:Bank\n' + r.entries.filter(inBase).map((e) => ['D' + us(e.date), 'T' + (e.kind === 'income' ? '' : '-') + fromCents(cents(e.amount)),
+      'P' + clean(e.merchant), e.note ? 'M' + clean(e.note) : null, 'L' + clean(e.category), '^'].filter(Boolean).join('\n')).join('\n') + '\n';
+  }
   function printReport(r) {
     const sheet = $('#printSheet');
     const shown = [0, 1, 2, 3, 4, 5, 7, 8, 11, 14];
@@ -1015,9 +1076,19 @@
     const f = $('#identityForm').elements;
     if (document.activeElement.form !== $('#identityForm')) for (const k of ['legal_name', 'address_line1', 'address_line2', 'city', 'postal_code', 'country', 'date_of_birth', 'phone']) f[k].value = identity.identity[k] || '';
     $('#identityNote').textContent = 'status: ' + identity.kyc_status.replace('_', ' ') + '. kept encrypted on the relay. required by law for real-money payments; never shown to a recipient unless you choose.';
+    const canVerify = identity.kyc_status === 'self_attested';
+    $('#identityVerify').hidden = !canVerify; $('#identityVerifyNote').hidden = !canVerify;
     rows('#myDisclosures', disclosures, (d, tr) => tr.append(td(when(d.disclosed_at)), td(d.authority), td(d.legal_basis.replace(/_/g, ' ')), td(d.fields.join(', '))), 'none. nothing about you has been disclosed.');
     rows('#dataMap', map.items, (i, tr) => tr.append(td(i.data, 'wrap'), td(i.stored, 'wrap'), td(i.visible_to.join(', '), 'wrap'), td(i.retention, 'wrap')));
   };
+  $('#identityVerify').addEventListener('click', (e) => guard(async () => {
+    const r = await api('/identity/verify', 'POST');
+    let url = null;
+    try { url = new URL(r.url); } catch (err) { url = null; }
+    if (!url || url.protocol !== 'https:' || url.hostname !== 'verify.stripe.com') throw new Error('the identity provider returned an unexpected address; not opening it.');
+    await save().catch(() => {});
+    location.assign(url.href);
+  }, e.currentTarget));
   $('#defaultMode').addEventListener('change', (e) => { L().settings.default_mode = e.target.value; changed(); });
   $('#identityForm').addEventListener('submit', (e) => {
     e.preventDefault();

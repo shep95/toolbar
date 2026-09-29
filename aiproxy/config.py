@@ -155,6 +155,13 @@ class Settings(BaseSettings):
     # Countries payments may not come from or go to (ISO codes). Review this
     # against the sanctions rules that apply to you; it is not legal advice.
     opossum_blocked_countries: str = "CU,IR,KP,SY"
+    # Official OFAC SDN list, downloaded and refreshed automatically.
+    opossum_ofac_enabled: bool = True
+    opossum_ofac_refresh_hours: int = 24
+    # Identity checks through Stripe Identity (needs Identity activated in
+    # the Stripe dashboard). A matching selfie costs more but is stronger.
+    opossum_stripe_identity: bool = True
+    opossum_identity_selfie: bool = False
 
     log_level: str = "INFO"
 

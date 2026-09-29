@@ -66,6 +66,7 @@ def make_settings(**overrides) -> Settings:
         stripe_webhook_secret="whsec_test",
         stripe_api_base="https://api.stripe.test/v1",
         opossum_master_key=OPOSSUM_MASTER_KEY,
+        opossum_ofac_enabled=False,
     )
     values.update(overrides)
     return Settings(_env_file=None, **values)

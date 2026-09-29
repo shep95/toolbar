@@ -8,8 +8,8 @@ obligations are enforced, per jurisdiction and per payment method:
 * per-payment and 24-hour limits for accounts whose identity is not
   verified, and a higher per-payment limit once verified;
 * real-money payments need at least a self-attested identity in the vault;
-* name screening against lists an operator loads (e.g. from a sanctions data
-  provider). The built-in list is empty: load a real list before going live.
+* name screening against the official OFAC SDN list (see sanctions.py) and
+  any other lists the operator loads.
 
 Limits and retention are rows in ``op_jurisdictions`` so an operator can
 set them per country without a deploy.
@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings
 from ..models import utcnow
-from .models import OpJurisdiction, OpScreeningEntry, OpTransaction
+from .models import OpJurisdiction, OpTransaction
 
 
 class ComplianceBlock(Exception):
@@ -79,15 +79,6 @@ async def limits_for(session: AsyncSession, settings: Settings, country: str) ->
 def normalise_name(name: str) -> str:
     text = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode().lower()
     return re.sub(r"[^a-z0-9]+", " ", text).strip()
-
-
-async def screen_name(session: AsyncSession, name: str) -> str | None:
-    """Return the list name on an exact normalised match, else None."""
-    normal = normalise_name(name)
-    if not normal:
-        return None
-    hit = await session.scalar(select(OpScreeningEntry.list_name).where(OpScreeningEntry.normalized_name == normal).limit(1))
-    return hit
 
 
 async def check_payment(

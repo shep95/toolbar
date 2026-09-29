@@ -16,6 +16,13 @@ Built with Python (FastAPI) and PostgreSQL. It runs live on Railway: see
 
 Open `/opossum` to create an account. The password is stretched in the browser, the ledger is encrypted on the device, and each payment is signed by a key that never leaves it. Choose per payment what the recipient learns: private, pseudonymous, chosen fields, or public. Share receipts with an accountant or tax authority through disclosure packages. Anyone can check them at `/opossum/verify`, or offline with `scripts/opossum_verify.py`. Operators run recipients, fee rules, identity checks, legal cases and the audit chain from the **opossum** room in `/admin`.
 
+It runs on real systems:
+
+- **Stripe:** Checkout, Connect, refunds and Identity.
+- **Sanctions:** the official OFAC SDN list, refreshed daily.
+- **Merchants:** signed webhooks to their own systems.
+- **Accounting:** OFX and QIF exports for accounting software, and OFX/QFX bank statement import.
+
 The architecture, data map, threat model, compliance design and the MVP's limits are in [docs/opossum.md](docs/opossum.md).
 
 ## Transactions API

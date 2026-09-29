@@ -1479,7 +1479,7 @@
           <div class="panel">
             <h3>relay payments</h3>
             <p class="note">what a recipient sees: pseudonyms, amounts and fees. no account, no identity.</p>
-            <div class="scroll"><table id="opTx"><thead><tr><th>time</th><th>id</th><th>recipient</th><th>payer pseudonym</th><th>mode</th><th class="num">amount</th><th class="num">opossum fee</th><th>status</th></tr></thead><tbody></tbody></table></div>
+            <div class="scroll"><table id="opTx"><thead><tr><th>time</th><th>id</th><th>recipient</th><th>payer pseudonym</th><th>mode</th><th class="num">amount</th><th class="num">opossum fee</th><th>status</th><th></th></tr></thead><tbody></tbody></table></div>
           </div>
           <div class="panel">
             <h3>recipients</h3>
@@ -1489,7 +1489,8 @@
               <label class="field wide"><span>name</span><input name="display_name" required maxlength="100" autocomplete="off"></label>
               <label class="field"><span>category</span><input name="category" maxlength="40" autocomplete="off" placeholder="shopping"></label>
               <label class="field"><span>country</span><input name="country" maxlength="2" autocomplete="off" placeholder="us"></label>
-              <label class="field"><span>processor</span><select name="processor"><option value="sandbox">sandbox (test money)</option><option value="stripe">stripe connect</option></select></label>
+              <label class="field"><span>processor</span><select name="processor"><option value="sandbox">sandbox (test money)</option><option value="stripe">stripe (real money)</option></select></label>
+              <label class="field"><span>stripe account</span><input name="processor_account" maxlength="64" autocomplete="off" placeholder="platform, acct_… or blank"></label>
               <button class="btn solid" type="submit">add recipient</button>
             </form>
             <div id="opSecret" class="secret" hidden role="alert"><p>merchant key — shown once. give it to the merchant for the merchant api.</p><code id="opSecretValue"></code>
@@ -1528,6 +1529,12 @@
                 </form>
               </div>
             </div>
+          </div>
+          <div class="panel">
+            <h3>sanctions screening</h3>
+            <p class="note" id="opSanctionsNote">the official ofac sdn list is downloaded and refreshed automatically; every identity and recipient is re-screened after each refresh.</p>
+            <div class="actions"><button class="btn" type="button" id="opSanctionsRefresh">refresh now</button></div>
+            <div class="scroll"><table id="opLists"><thead><tr><th>list</th><th class="num">names</th><th>loaded</th><th>last check</th><th>problem</th></tr></thead><tbody></tbody></table></div>
           </div>
           <div class="panel">
             <h3>legal cases</h3>
@@ -2148,10 +2155,12 @@
   const CASE_FIELDS = ['legal_name', 'email', 'address', 'date_of_birth', 'phone', 'identity_status', 'account_id', 'device_id', 'account_payments'];
   const cash = (v) => (v == null ? '—' : Number(v).toFixed(2));
   async function loadOpossum() {
-    const [o, tx, recips, fees, kyc, cases, auditRows] = await Promise.all([
+    const [o, tx, recips, fees, kyc, cases, auditRows, lists] = await Promise.all([
       api('/opossum/overview'), api('/opossum/transactions?limit=50'), api('/opossum/recipients'), api('/opossum/fee-rules'),
-      api('/opossum/kyc'), api('/opossum/cases'), api('/opossum/audit?limit=40'),
+      api('/opossum/kyc'), api('/opossum/cases'), api('/opossum/audit?limit=40'), api('/opossum/sanctions'),
     ]);
+    rows('#opLists', lists.lists, (l, tr) => tr.append(td(l.list, 'data'), td(l.entries, 'num'), td(when(l.loaded_at)), td(when(l.checked_at)),
+      td(l.last_error || '—', 'data ellipsis')), lists.auto_refresh ? 'not loaded yet; it loads within a minute of starting.' : 'automatic refresh is off.');
     const settled = o.settled_30d.reduce((a, x) => a + x.payments, 0);
     const volume = o.settled_30d.map((x) => cash(x.volume) + ' ' + x.currency).join(' · ') || '0';
     const earned = o.settled_30d.map((x) => cash(x.opossum_fees) + ' ' + x.currency).join(' · ') || '0';
@@ -2160,7 +2169,12 @@
       [accounts, 'accounts'], [o.accounts_by_identity_status.verified || 0, 'identity verified'], [o.active_recipients, 'recipients'],
       [o.open_cases, 'open legal cases'], [o.audit_entries, 'audit entries']].map(([v, l]) => h('div', { class: 'metric' }, h('div', { class: 'v' }, String(v)), h('div', { class: 'l' }, l))));
     rows('#opTx', tx, (t, tr) => tr.append(td(when(t.created_at)), td(t.id, 'data'), td(t.recipient, 'data'), td(t.payer.pseudonym, 'data'), td(t.mode),
-      td(cash(t.amount) + ' ' + t.currency, 'num'), td(cash(t.opossum_fee), 'num'), tagCell(t.test_money ? 'test money' : t.status, t.status === 'settled' ? 'trust' : kind(t.status))), 'no payments yet.');
+      td(cash(t.amount) + ' ' + t.currency, 'num'), td(cash(t.opossum_fee), 'num'), tagCell(t.test_money ? 'test money · ' + t.status : t.status, t.status === 'settled' ? 'trust' : kind(t.status)),
+      h('td', null, t.status === 'settled' ? h('button', { type: 'button', class: 'btn warn small', on: { click: (e) => guard(async () => {
+        if (!(await ask('refund ' + t.id + '?', cash(t.amount) + ' ' + t.currency + ' goes back to the payer in full' + (t.test_money ? ' (test money).' : '. for stripe connect payments the transfer and the opossum fee are reversed too.'), 'refund'))) return;
+        await api('/opossum/transactions/' + encodeURIComponent(t.id) + '/refund', 'POST', { reason: 'refunded from the admin' });
+        toast('refunded'); await loadOpossum();
+      }, e.currentTarget) } }, 'refund') : '')), 'no payments yet.');
     rows('#opRecipients', recips, (r, tr) => {
       const actions = h('td');
       actions.append(h('button', { type: 'button', class: 'btn small', on: { click: (e) => guard(async () => {
@@ -2169,7 +2183,11 @@
         $('#opSecretValue').textContent = k.merchant_key; $('#opSecret').hidden = false;
         await loadOpossum();
       }, e.currentTarget) } }, r.merchant_key_prefix ? 'new key' : 'merchant key'));
-      actions.append(h('button', { type: 'button', class: 'btn quiet small', on: { click: (e) => guard(async () => {
+      if (r.status === 'onboarding') actions.append(h('button', { type: 'button', class: 'btn small', on: { click: (e) => guard(async () => {
+        const out = await api('/opossum/recipients/' + r.id + '/check-onboarding', 'POST');
+        toast(out.ready ? r.handle + ' can take payments now' : 'not ready: ' + out.detail, out.ready ? 'trust' : 'alarm'); await loadOpossum();
+      }, e.currentTarget) } }, 'check stripe'));
+      if (r.processor_account !== 'platform') actions.append(h('button', { type: 'button', class: 'btn quiet small', on: { click: (e) => guard(async () => {
         const out = await api('/opossum/recipients/' + r.id + '/stripe-onboarding', 'POST');
         let url = null; try { url = new URL(out.onboarding_url); } catch (err) { url = null; }
         if (!url || url.protocol !== 'https:' || !url.hostname.endsWith('stripe.com')) throw new Error('stripe returned an unexpected onboarding address');
@@ -2229,8 +2247,10 @@
     e.preventDefault();
     const d = formData(e.target);
     guard(async () => {
-      await api('/opossum/recipients', 'POST', { handle: d.handle.trim().toLowerCase(), display_name: d.display_name.trim(), category: d.category.trim() || 'general',
-        country: d.country.trim() || 'US', processor: d.processor });
+      const body = { handle: d.handle.trim().toLowerCase(), display_name: d.display_name.trim(), category: d.category.trim() || 'general',
+        country: d.country.trim() || 'US', processor: d.processor };
+      if (d.processor === 'stripe' && d.processor_account.trim()) body.processor_account = d.processor_account.trim();
+      await api('/opossum/recipients', 'POST', body);
       e.target.reset(); toast('recipient added', 'trust'); await loadOpossum();
     }, submitter(e));
   });
@@ -2267,6 +2287,11 @@
       await loadOpossum();
     }, btn);
   });
+  $('#opSanctionsRefresh').addEventListener('click', (e) => guard(async () => {
+    const r = await api('/opossum/sanctions/refresh', 'POST');
+    toast('ofac list loaded: ' + r.entries + ' names, ' + r.new_matches + ' new matches', r.new_matches ? 'alarm' : 'trust');
+    await loadOpossum();
+  }, e.currentTarget));
   $('#opVerify').addEventListener('click', (e) => guard(async () => {
     const r = await api('/opossum/audit/verify');
     $('#opAuditNote').textContent = r.ok ? 'intact: ' + r.entries + ' entries, each linked to the one before. head ' + r.head.slice(0, 16) + '…'

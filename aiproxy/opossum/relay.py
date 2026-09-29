@@ -24,7 +24,7 @@ from sqlalchemy.exc import IntegrityError
 
 from ..models import utcnow
 from ..services import Services
-from . import audit
+from . import audit, webhooks
 from .compliance import ComplianceBlock, check_payment
 from .crypto import RelayKeys, random_id
 from .fees import FeeError, Quote, Rule, choose_rule, quote
@@ -125,6 +125,7 @@ def owner_view(keys: RelayKeys, tx: OpTransaction, recipient: OpRecipient) -> di
         "recipient": recipient_public(recipient), "invoice_id": tx.invoice_id, **money_fields(tx),
         "fee_rule": tx.fee_rule, "created_at": aware(tx.created_at).isoformat(),
         "settled_at": aware(tx.settled_at).isoformat() if tx.settled_at else None,
+        "refunded_at": aware(tx.refunded_at).isoformat() if tx.refunded_at else None,
         "test_money": tx.processor == "sandbox", "shown_to_recipient": [],
     }
     if tx.disclosed_enc:
@@ -145,6 +146,7 @@ def recipient_view(keys: RelayKeys, tx: OpTransaction) -> dict:
         "amount": money(tx.amount), "currency": tx.currency, "you_receive": money(tx.recipient_receives),
         "opossum_fee": money(tx.opossum_fee), "processor_fee": money(tx.processor_fee), "fee_bearer": tx.fee_bearer,
         "created_at": aware(tx.created_at).isoformat(), "settled_at": aware(tx.settled_at).isoformat() if tx.settled_at else None,
+        "refunded_at": aware(tx.refunded_at).isoformat() if tx.refunded_at else None,
         "test_money": tx.processor == "sandbox",
     }
 
@@ -358,11 +360,17 @@ async def settle(session, keys: RelayKeys, tx: OpTransaction) -> None:
     tx.receipt_enc = keys.seal({"sd_jwt": sd_jwt, "disclosures": dict(zip(names, disclosures))}, f"op_transactions:{tx.id}:receipt")
     tx.status = "settled"
     tx.settled_at = now
+    recipient = await session.get(OpRecipient, tx.recipient_id)
     if tx.invoice_id:
         invoice = await session.get(OpInvoice, tx.invoice_id)
         if invoice is not None and invoice.status == "open":
             invoice.status = "paid"
             invoice.paid_tx_id = tx.id
+            if recipient is not None:
+                webhooks.enqueue(session, recipient, "invoice.paid", {"invoice_id": invoice.id, "reference": invoice.reference,
+                                                                      "payment": recipient_view(keys, tx)})
+    if recipient is not None:
+        webhooks.enqueue(session, recipient, "payment.settled", recipient_view(keys, tx))
     await audit.append(session, "relay", "payment_settled", tx.id, processor=tx.processor, receipt_sha256=hashlib.sha256(sd_jwt.encode()).hexdigest())
 
 
@@ -387,5 +395,74 @@ async def settle_from_stripe(services: Services, event_type: str, obj: dict) -> 
             log.error("opossum payment %s paid an unexpected amount", tx.id)
             await audit.append(session, "relay", "payment_amount_mismatch", tx.id)
             return {"received": True, "ignored": "amount mismatch"}
+        if obj.get("payment_intent"):
+            tx.processor_payment = str(obj["payment_intent"])[:80]
         await settle(session, keys, tx)
     return {"received": True, "settled": tx_id}
+
+
+# ---------------------------------------------------------------- refunds
+
+
+async def refund_payment(services: Services, keys: RelayKeys, tx_id: str, *, actor: str, reason: str,
+                         recipient_id=None) -> OpTransaction:
+    """Refund a settled payment in full, through the processor that took it.
+
+    ``recipient_id`` limits a merchant to refunding its own payments.
+    """
+    from .processors import PLATFORM_ACCOUNT
+    from .stripe_ops import payment_intent_for, refund
+
+    async with services.db.session() as session:
+        tx = await session.get(OpTransaction, tx_id[:40])
+        if tx is None or (recipient_id is not None and tx.recipient_id != recipient_id):
+            raise OpError(404, "unknown_payment", "no such payment")
+        if tx.status == "refunded":
+            return tx
+        if tx.status != "settled":
+            raise OpError(409, "not_refundable", f"only settled payments can be refunded; this one is {tx.status}")
+        recipient = await session.get(OpRecipient, tx.recipient_id)
+    reference = "sbx_refund_" + tx.id.split("_", 1)[1]
+    if tx.processor == "stripe":
+        try:
+            intent = tx.processor_payment or await payment_intent_for(services, tx.processor_ref)
+            if not intent:
+                raise ProcessorError("Stripe has no payment for this checkout yet")
+            reference = await refund(services, payment_intent=intent, direct=recipient.processor_account == PLATFORM_ACCOUNT, tx_id=tx.id)
+        except ProcessorError as exc:
+            raise OpError(502, "processor_error", exc.message) from None
+    return await mark_refunded(services, keys, tx.id, reference=reference, actor=actor, reason=reason)
+
+
+async def mark_refunded(services: Services, keys: RelayKeys, tx_id: str, *, reference: str, actor: str, reason: str) -> OpTransaction:
+    async with services.db.session() as session, session.begin():
+        tx = await session.get(OpTransaction, tx_id)
+        if tx.status == "refunded":
+            return tx
+        tx.status, tx.refunded_at, tx.refund_ref = "refunded", utcnow(), reference[:80]
+        recipient = await session.get(OpRecipient, tx.recipient_id)
+        if tx.invoice_id:
+            invoice = await session.get(OpInvoice, tx.invoice_id)
+            if invoice is not None and invoice.paid_tx_id == tx.id:
+                invoice.status = "refunded"
+        if recipient is not None:
+            webhooks.enqueue(session, recipient, "payment.refunded", recipient_view(keys, tx))
+        await audit.append(session, actor, "payment_refunded", tx.id, reason=reason[:120], reference=reference[:80])
+    return tx
+
+
+async def refund_from_stripe_charge(services: Services, charge: dict) -> dict:
+    """charge.refunded: a refund made directly in Stripe is mirrored here."""
+    from .web import keys as get_keys
+
+    intent = charge.get("payment_intent")
+    if not intent or not charge.get("refunded"):
+        return {"received": True, "ignored": "not a full refund"}
+    async with services.db.session() as session:
+        tx = await session.scalar(select(OpTransaction).where(OpTransaction.processor_payment == str(intent)[:80]))
+    if tx is None:
+        return {"received": True, "ignored": "not an opossum payment"}
+    refunds = ((charge.get("refunds") or {}).get("data") or [{}])
+    await mark_refunded(services, get_keys(services), tx.id, reference=str(refunds[0].get("id") or "stripe"), actor="stripe",
+                        reason="refunded in Stripe")
+    return {"received": True, "refunded": tx.id}

@@ -196,6 +196,18 @@ async def stripe_webhook(request: Request) -> Response:
         event = json.loads(payload)
     except ValueError:
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    event_type = event.get("type") or ""
+    obj = (event.get("data") or {}).get("object") or {}
+    if event_type == "charge.refunded" or event_type.startswith("identity.verification_session."):
+        from .opossum.api import identity_result
+        from .opossum.relay import refund_from_stripe_charge
+
+        try:
+            if event_type == "charge.refunded":
+                return JSONResponse(await refund_from_stripe_charge(services, obj))
+            return JSONResponse(await identity_result(services, event_type, obj))
+        except DB_UNAVAILABLE_ERRORS:
+            return JSONResponse({"error": "temporarily unavailable"}, status_code=503)
     if event.get("type") not in ("checkout.session.completed", "checkout.session.async_payment_succeeded", "checkout.session.expired"):
         return JSONResponse({"received": True, "ignored": event.get("type")})
     obj = (event.get("data") or {}).get("object") or {}

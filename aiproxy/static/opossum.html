@@ -209,7 +209,7 @@
               <label class="check"><input type="checkbox" name="tax"> tax-relevant</label>
               <label class="check"><input type="checkbox" name="reimbursable"> reimbursable</label>
             </div>
-            <div class="actions"><button class="btn solid" type="submit">add</button><label class="btn quiet small" for="importFile">import csv</label><input type="file" id="importFile" accept=".csv,text/csv" hidden></div>
+            <div class="actions"><button class="btn solid" type="submit">add</button><label class="btn quiet small" for="importFile">import bank statement (csv, ofx, qfx)</label><input type="file" id="importFile" accept=".csv,.ofx,.qfx,text/csv,application/x-ofx" hidden></div>
           </form>
           <div class="panel">
             <div class="fields">
@@ -305,6 +305,8 @@
               <button class="btn" type="button" data-export="xlsx">spreadsheet</button>
               <button class="btn" type="button" data-export="pdf">pdf</button>
               <button class="btn" type="button" data-export="json">json</button>
+              <button class="btn" type="button" data-export="ofx">ofx (quickbooks, xero, gnucash)</button>
+              <button class="btn" type="button" data-export="qif">qif (quicken)</button>
             </div>
           </form>
           <div class="panel">
@@ -376,7 +378,8 @@
                 <label class="field"><span>date of birth</span><input name="date_of_birth" type="date"></label>
                 <label class="field"><span>phone</span><input name="phone" maxlength="30" autocomplete="tel"></label>
               </div>
-              <button class="btn" type="submit">save to vault</button>
+              <div class="actions"><button class="btn" type="submit">save to vault</button><button class="btn quiet" type="button" id="identityVerify" hidden>verify with stripe identity</button></div>
+              <p class="faint" id="identityVerifyNote" hidden>stripe checks your document and tells opossum only whether it passed. it raises your payment limits.</p>
             </form>
             <div class="panel">
               <h3>disclosures about you</h3>
