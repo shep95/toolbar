@@ -94,6 +94,8 @@ create your first real user and issue their key.
   - A **restricted** key (`rk_live_...`) in `STRIPE_SECRET_KEY`. In Stripe's dashboard go to **Developers → API keys → Create restricted key**, and set **Checkout Sessions** to **Write** and everything else to **None**. If a checkout then fails with a permissions error in the app's logs, also give **Products** and **Prices** Write.
 
   Sales of your other products on the same Stripe account are ignored: only sessions this app created credit anything.
+
+  To check the setup, open `/admin` and click **Test Stripe checkout**. It opens a real $5 Stripe payment page, which charges nothing unless you pay and credits no one if you do. If the key is wrong or lacks a permission, it shows Stripe's exact reason.
 - **Backups:** the PostgreSQL service has a **Backups** tab. Turn backups on, since the database holds every balance.
 
 ## Troubleshooting

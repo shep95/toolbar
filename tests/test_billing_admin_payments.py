@@ -314,3 +314,28 @@ async def test_local_currency_payment_is_credited_in_usd(client, make_user, data
     assert r.json()["credited"] == "20"
     detail = (await client.get(f"/admin/api/users/{user['id']}", headers=ADMIN)).json()
     assert "customer paid 1650.00 INR" in detail["balance_adjustments"][0]["note"]
+
+
+async def test_admin_stripe_test_checkout(client, upstream):
+    captured = {}
+
+    def stripe(request: httpx.Request):
+        captured["form"] = parse_qs(request.content.decode())
+        return httpx.Response(200, json={"id": "cs_test", "url": "https://checkout.stripe.com/c/pay/cs_test"})
+
+    upstream.on("/v1/checkout/sessions", stripe)
+    r = (await client.post("/admin/api/stripe/test-checkout", headers=ADMIN)).json()
+    assert r == {"ok": True, "checkout_url": "https://checkout.stripe.com/c/pay/cs_test", "session_id": "cs_test"}
+    assert captured["form"]["metadata[purpose]"] == ["admin_test"]  # a paid test credits no one
+    assert "client_reference_id" not in captured["form"]
+    assert (await client.post("/admin/api/stripe/test-checkout")).status_code == 401
+
+    upstream.on("/v1/checkout/sessions", httpx.Response(403, json={"error": {"message": "The provided key does not have the required permissions"}}))
+    r = (await client.post("/admin/api/stripe/test-checkout", headers=ADMIN)).json()
+    assert r["ok"] is False and "required permissions" in r["reason"]
+
+
+@pytest.mark.parametrize("settings_overrides", [{"stripe_secret_key": None}])
+async def test_admin_stripe_test_reports_missing_key(client):
+    r = (await client.post("/admin/api/stripe/test-checkout", headers=ADMIN)).json()
+    assert r == {"ok": False, "reason": "missing Railway variable: STRIPE_SECRET_KEY"}

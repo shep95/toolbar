@@ -71,6 +71,7 @@
       <h2>Overview</h2>
       <div class="cards" id="cards"></div>
       <p class="muted" id="providers"></p>
+      <p><button type="button" id="stripeTest">Test Stripe checkout</button> <span id="stripeResult" class="muted"></span></p>
       <h2 style="margin-top:14px">Revenue per day (30 days)</h2>
       <div class="bars" id="bars"></div>
     </section>
@@ -360,6 +361,19 @@
       e.target.reset(); await openUser(u.id); await loadOverview();
     });
   });
+  $('#stripeTest').addEventListener('click', () => guard(async () => {
+    const out = $('#stripeResult'); out.replaceChildren(); out.textContent = 'Asking Stripe…';
+    const r = await api('/stripe/test-checkout', { method: 'POST' });
+    out.replaceChildren();
+    if (r.ok) {
+      out.append('Stripe works. ');
+      const a = document.createElement('a'); a.href = r.checkout_url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+      a.textContent = 'Open the test payment page'; out.appendChild(a);
+      out.append(' (do not pay; it expires by itself).');
+    } else {
+      out.textContent = 'Stripe said: ' + r.reason;
+    }
+  }));
   $('#country').addEventListener('submit', (e) => {
     e.preventDefault(); const d = formData(e.target);
     guard(async () => {

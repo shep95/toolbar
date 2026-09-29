@@ -62,6 +62,59 @@ def sign_stripe_payload(payload: bytes, secret: str, timestamp: int | None = Non
     return f"t={ts},v1={sig}"
 
 
+class StripeUnavailable(Exception):
+    """Stripe could not be reached or refused the request; ``message`` is Stripe's reason."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
+async def start_checkout(
+    services: Services,
+    *,
+    cents: int,
+    client_reference_id: str | None,
+    metadata: dict[str, str],
+    product_name: str,
+    request_id: str,
+) -> dict:
+    """Create a Stripe Checkout Session and return it. Shared by top-ups and the admin test."""
+    settings = services.settings
+    form = {
+        "mode": "payment",
+        "success_url": settings.stripe_success_url,
+        "cancel_url": settings.stripe_cancel_url,
+        "line_items[0][quantity]": "1",
+        "line_items[0][price_data][currency]": "usd",
+        "line_items[0][price_data][unit_amount]": str(cents),
+        "line_items[0][price_data][product_data][name]": product_name,
+        **{f"metadata[{k}]": v for k, v in metadata.items()},
+    }
+    if client_reference_id:
+        form["client_reference_id"] = client_reference_id
+    try:
+        resp = await services.http.post(
+            f"{settings.stripe_api_base}/checkout/sessions",
+            data=form,
+            headers={
+                "Authorization": f"Bearer {settings.stripe_secret_key.get_secret_value()}",
+                "Idempotency-Key": request_id,
+            },
+        )
+    except httpx.HTTPError:
+        log.exception("stripe unreachable", extra={"request_id": request_id})
+        raise StripeUnavailable("Stripe could not be reached") from None
+    if resp.status_code >= 400:
+        log.error("stripe rejected checkout (HTTP %s): %s", resp.status_code, resp.text[:500])
+        try:
+            reason = resp.json().get("error", {}).get("message") or f"HTTP {resp.status_code}"
+        except ValueError:
+            reason = f"HTTP {resp.status_code}"
+        raise StripeUnavailable(reason)
+    return resp.json()
+
+
 @router.post("/v1/billing/checkout")
 async def create_checkout(request: Request) -> Response:
     async def work(services: Services, request_id: str) -> Response:
@@ -85,36 +138,17 @@ async def create_checkout(request: Request) -> Response:
                 "invalid_request",
                 f"'amount_usd' must be between {settings.stripe_min_topup_usd} and {settings.stripe_max_topup_usd} with at most 2 decimals",
             )
-        cents = int(amount * 100)
-        form = {
-            "mode": "payment",
-            "success_url": settings.stripe_success_url,
-            "cancel_url": settings.stripe_cancel_url,
-            "client_reference_id": str(caller.user_id),
-            "line_items[0][quantity]": "1",
-            "line_items[0][price_data][currency]": "usd",
-            "line_items[0][price_data][unit_amount]": str(cents),
-            "line_items[0][price_data][product_data][name]": "API credit",
-            "metadata[purpose]": TOPUP_PURPOSE,
-            "metadata[user_id]": str(caller.user_id),
-            "metadata[credit_usd]": str(amount),
-        }
         try:
-            resp = await services.http.post(
-                f"{settings.stripe_api_base}/checkout/sessions",
-                data=form,
-                headers={
-                    "Authorization": f"Bearer {settings.stripe_secret_key.get_secret_value()}",
-                    "Idempotency-Key": request_id,
-                },
+            session = await start_checkout(
+                services,
+                cents=int(amount * 100),
+                client_reference_id=str(caller.user_id),
+                metadata={"purpose": TOPUP_PURPOSE, "user_id": str(caller.user_id), "credit_usd": str(amount)},
+                product_name="API credit",
+                request_id=request_id,
             )
-        except httpx.HTTPError:
-            log.exception("stripe unreachable", extra={"request_id": request_id})
-            raise GatewayError(502, "payments_unavailable", "payment provider unavailable") from None
-        if resp.status_code >= 400:
-            log.error("stripe rejected checkout (HTTP %s): %s", resp.status_code, resp.text[:500])
-            raise GatewayError(502, "payments_unavailable", "could not start checkout")
-        session = resp.json()
+        except StripeUnavailable:
+            raise GatewayError(502, "payments_unavailable", "could not start checkout") from None
         return JSONResponse(
             {"checkout_url": session.get("url"), "session_id": session.get("id"), "amount_usd": str(amount)},
             headers={"X-Request-Id": request_id},

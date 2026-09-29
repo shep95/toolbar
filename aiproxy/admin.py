@@ -806,6 +806,31 @@ async def audit_log(
     ]
 
 
+@api.post("/stripe/test-checkout")
+async def stripe_test_checkout(services: Services = Depends(require_admin)):
+    """Open a real $5 Stripe Checkout page to prove the Stripe key works.
+
+    Nothing is charged unless someone completes the payment, and a completed
+    test payment credits no one (its purpose is not a top-up).
+    """
+    from .payments import StripeUnavailable, start_checkout
+
+    settings = services.settings
+    missing = [n for n, v in (("STRIPE_SECRET_KEY", settings.stripe_secret_key),
+                               ("STRIPE_WEBHOOK_SECRET", settings.stripe_webhook_secret)) if not v]
+    if missing:
+        return {"ok": False, "reason": f"missing Railway variable: {', '.join(missing)}"}
+    try:
+        session = await start_checkout(
+            services, cents=500, client_reference_id=None, metadata={"purpose": "admin_test"},
+            product_name="Test checkout (do not pay)", request_id="admin-test-" + uuid.uuid4().hex,
+        )
+    except StripeUnavailable as exc:
+        return {"ok": False, "reason": exc.message}
+    log.info("stripe test checkout created", extra={"event": "admin_stripe_test"})
+    return {"ok": True, "checkout_url": session.get("url"), "session_id": session.get("id")}
+
+
 @api.post("/maintenance/reconcile")
 async def reconcile(services: Services = Depends(require_admin)):
     count = await services.billing.reconcile_stale(timedelta(minutes=services.settings.pending_timeout_minutes))
