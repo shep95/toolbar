@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Proxy Admin</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #5f6b7a; --border: #dde1e6;
+    --accent: #2f6fed; --accent-text: #ffffff; --danger: #c93838; --ok: #1f8a4c; --warn: #b7791f;
+    --code-bg: #eef1f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418; --panel: #1a1e24; --text: #e6e9ee; --muted: #9aa5b3; --border: #2c323b;
+      --accent: #5b8ff9; --accent-text: #0b0d10; --danger: #f07171; --ok: #4cc38a; --warn: #e0a84a;
+      --code-bg: #232932;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  header h1 { font-size: 16px; margin: 0; }
+  main { max-width: 1200px; margin: 0 auto; padding: 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  #app { min-width: 0; }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; min-width: 0; }
+  section h2 { font-size: 14px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .card { border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
+  .card .v { font-size: 20px; font-weight: 600; }
+  .card .l { color: var(--muted); font-size: 12px; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; }
+  tr.sel td { background: var(--code-bg); }
+  input, select, button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button.danger { color: var(--danger); }
+  form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+  form input { min-width: 0; flex: 1 1 120px; }
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 12px; border: 1px solid currentColor; }
+  .s-active, .s-success { color: var(--ok); } .s-suspended, .s-revoked, .s-failed, .s-error { color: var(--danger); } .s-pending { color: var(--warn); }
+  .secret { background: var(--code-bg); border: 1px dashed var(--warn); padding: 10px; border-radius: 6px; word-break: break-all; font-family: ui-monospace, monospace; }
+  .muted { color: var(--muted); }
+  .bars { display: flex; align-items: flex-end; gap: 3px; height: 120px; border-bottom: 1px solid var(--border); }
+  .bars div { flex: 1; background: var(--accent); min-height: 1px; border-radius: 2px 2px 0 0; }
+  #msg { min-height: 1.2em; }
+  #msg.err { color: var(--danger); }
+  .hidden { display: none !important; }
+  @media (max-width: 600px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>AI API Proxy · Admin</h1>
+  <form id="login" autocomplete="off">
+    <input id="token" type="password" placeholder="Admin token" aria-label="Admin token">
+    <button class="primary">Connect</button>
+    <button type="button" id="logout">Sign out</button>
+  </form>
+</header>
+<main>
+  <div id="msg" role="status"></div>
+  <div id="app" class="hidden">
+    <section>
+      <h2>Overview</h2>
+      <div class="cards" id="cards"></div>
+      <p class="muted" id="providers"></p>
+      <h2 style="margin-top:14px">Revenue per day (30 days)</h2>
+      <div class="bars" id="bars"></div>
+    </section>
+
+    <div class="grid2" style="margin-top:16px">
+      <section>
+        <h2>Users</h2>
+        <form id="newUser">
+          <input name="email" type="email" placeholder="email" required>
+          <input name="initial_balance" type="number" step="0.01" min="0" placeholder="starting balance $">
+          <button class="primary">Create user</button>
+        </form>
+        <div class="scroll"><table id="users"><thead><tr><th>Email</th><th>Balance</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>
+      </section>
+
+      <section id="userPanel" class="hidden">
+        <h2 id="userTitle">User</h2>
+        <form id="credit">
+          <input name="amount" type="number" step="0.01" placeholder="amount $ (negative to debit)" required>
+          <input name="note" placeholder="note">
+          <button>Adjust balance</button>
+        </form>
+        <form id="newKey">
+          <select name="provider" aria-label="provider"><option>any</option><option>openai</option><option>anthropic</option><option>mistral</option></select>
+          <input name="name" placeholder="key label">
+          <input name="rate_limit_per_minute" type="number" min="1" placeholder="req/min (default)">
+          <button class="primary">Issue key</button>
+        </form>
+        <div id="newSecret" class="secret hidden"></div>
+        <div class="scroll"><table id="keys"><thead><tr><th>Prefix</th><th>Label</th><th>Provider</th><th>Status</th><th>Last used</th><th></th></tr></thead><tbody></tbody></table></div>
+        <p><button id="toggleStatus"></button></p>
+      </section>
+    </div>
+
+    <section style="margin-top:16px">
+      <h2>Pricing</h2>
+      <p class="muted" id="defaultFee"></p>
+      <form id="pricing">
+        <select name="provider" aria-label="provider"><option>*</option><option>openai</option><option>anthropic</option><option>mistral</option></select>
+        <input name="model" placeholder="model (* = all)" value="*">
+        <input name="fee_per_request" type="number" step="0.000001" min="0" placeholder="$ per request" required>
+        <input name="fee_per_1k_tokens" type="number" step="0.000001" min="0" placeholder="$ per 1k tokens" value="0">
+        <button class="primary">Save rule</button>
+      </form>
+      <div class="scroll"><table id="rules"><thead><tr><th>Provider</th><th>Model</th><th>Per request</th><th>Per 1k tokens</th><th></th></tr></thead><tbody></tbody></table></div>
+    </section>
+
+    <section style="margin-top:16px">
+      <h2>Recent transactions</h2>
+      <div class="scroll"><table id="txs"><thead><tr><th>Time</th><th>User</th><th>Provider</th><th>Model</th><th>Tokens</th><th>Fee</th><th>Status</th><th>Latency</th></tr></thead><tbody></tbody></table></div>
+    </section>
+
+    <section style="margin-top:16px">
+      <h2>Rejected requests</h2>
+      <div class="scroll"><table id="audit"><thead><tr><th>Time</th><th>Status</th><th>Outcome</th><th>Key</th><th>IP</th><th>Path</th><th>Detail</th></tr></thead><tbody></tbody></table></div>
+    </section>
+  </div>
+</main>
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  let token = '';
+  try { token = sessionStorage.getItem('adminToken') || ''; } catch (e) {}
+  let users = [];
+  let selected = null;
+
+  function msg(text, isErr) { const m = $('#msg'); m.textContent = text || ''; m.className = isErr ? 'err' : ''; }
+
+  async function api(path, opts = {}) {
+    const res = await fetch('/admin/api' + path, {
+      ...opts,
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((body.error && (body.error.message)) || ('HTTP ' + res.status));
+    return body;
+  }
+
+  function cell(text, cls) {
+    const td = document.createElement('td');
+    if (cls) { const span = document.createElement('span'); span.className = cls; span.textContent = text; td.appendChild(span); }
+    else td.textContent = text == null ? '' : String(text);
+    return td;
+  }
+  function button(label, onClick, cls) {
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = label; if (cls) b.className = cls;
+    b.addEventListener('click', onClick); return b;
+  }
+  function fill(tableSel, rows, build) {
+    const tb = $(tableSel + ' tbody'); tb.replaceChildren();
+    rows.forEach((r) => { const tr = document.createElement('tr'); build(r, tr); tb.appendChild(tr); });
+  }
+  const when = (iso) => iso ? new Date(iso).toLocaleString() : '';
+  const money = (v) => '$' + Number(v).toFixed(4);
+  const pill = (s) => 'pill s-' + s;
+
+  async function loadOverview() {
+    const o = await api('/overview');
+    const cards = [
+      ['Users', o.users], ['Active keys', o.active_keys], ['Pending tx', o.pending_transactions],
+      ['Requests 24h', o.last_24h.requests], ['Revenue 24h', money(o.last_24h.revenue)],
+      ['Requests 30d', o.last_30d.requests], ['Revenue 30d', money(o.last_30d.revenue)], ['Tokens 30d', o.last_30d.tokens],
+    ];
+    const wrap = $('#cards'); wrap.replaceChildren();
+    cards.forEach(([l, v]) => {
+      const d = document.createElement('div'); d.className = 'card';
+      const vv = document.createElement('div'); vv.className = 'v'; vv.textContent = v;
+      const ll = document.createElement('div'); ll.className = 'l'; ll.textContent = l;
+      d.append(vv, ll); wrap.appendChild(d);
+    });
+    $('#providers').textContent = 'Providers: ' + Object.entries(o.providers)
+      .map(([n, p]) => n + (p.configured ? ' ✓' : ' (no credentials)')).join(' · ') +
+      ' · Stripe ' + (o.stripe_enabled ? 'on' : 'off');
+
+    const u = await api('/usage?days=30');
+    const perDay = {};
+    u.daily.forEach((d) => { perDay[d.day] = (perDay[d.day] || 0) + Number(d.revenue); });
+    const days = [];
+    for (let i = 29; i >= 0; i--) { const d = new Date(Date.now() - i * 864e5); days.push(d.toISOString().slice(0, 10)); }
+    const max = Math.max(0.000001, ...days.map((d) => perDay[d] || 0));
+    const bars = $('#bars'); bars.replaceChildren();
+    days.forEach((d) => {
+      const b = document.createElement('div'); const v = perDay[d] || 0;
+      b.style.height = (100 * v / max) + '%'; b.title = d + ': ' + money(v); bars.appendChild(b);
+    });
+  }
+
+  async function loadUsers() {
+    users = await api('/users?limit=200');
+    fill('#users', users, (u, tr) => {
+      if (selected && selected.id === u.id) tr.className = 'sel';
+      tr.append(cell(u.email), cell(money(u.balance)), cell(u.status, pill(u.status)));
+      const td = document.createElement('td'); td.appendChild(button('Open', () => openUser(u.id))); tr.appendChild(td);
+    });
+  }
+
+  async function openUser(id) {
+    selected = await api('/users/' + id);
+    $('#userPanel').classList.remove('hidden');
+    $('#newSecret').classList.add('hidden');
+    $('#userTitle').textContent = selected.email + ' · ' + money(selected.balance);
+    $('#toggleStatus').textContent = selected.status === 'active' ? 'Suspend user' : 'Reactivate user';
+    $('#toggleStatus').className = selected.status === 'active' ? 'danger' : '';
+    fill('#keys', selected.keys, (k, tr) => {
+      tr.append(cell(k.prefix + '…'), cell(k.name || ''), cell(k.provider), cell(k.status, pill(k.status)), cell(when(k.last_used_at)));
+      const td = document.createElement('td');
+      if (k.status === 'active') td.appendChild(button('Revoke', async () => {
+        if (!confirm('Revoke key ' + k.prefix + '…? This cannot be undone.')) return;
+        await guard(async () => { await api('/keys/' + k.id, { method: 'DELETE' }); await openUser(id); });
+      }, 'danger'));
+      tr.appendChild(td);
+    });
+    await loadUsers();
+  }
+
+  async function loadPricing() {
+    const p = await api('/pricing');
+    $('#defaultFee').textContent = 'Fallback when no rule matches: ' + money(p.default_fee_per_request) + ' per request (DEFAULT_FEE_PER_REQUEST).';
+    fill('#rules', p.rules, (r, tr) => {
+      tr.append(cell(r.provider), cell(r.model), cell(money(r.fee_per_request)), cell(money(r.fee_per_1k_tokens)));
+      const td = document.createElement('td');
+      td.appendChild(button('Delete', () => guard(async () => { await api('/pricing/' + r.id, { method: 'DELETE' }); await loadPricing(); }), 'danger'));
+      tr.appendChild(td);
+    });
+  }
+
+  async function loadActivity() {
+    const byId = Object.fromEntries(users.map((u) => [u.id, u.email]));
+    const txs = await api('/transactions?limit=50');
+    fill('#txs', txs, (t, tr) => tr.append(
+      cell(when(t.timestamp)), cell(byId[t.user_id] || t.user_id.slice(0, 8)), cell(t.provider), cell(t.model_called),
+      cell(t.tokens_used), cell(money(t.fee_charged)), cell(t.status, pill(t.status)), cell(t.latency_ms != null ? t.latency_ms + ' ms' : '')));
+    const audit = await api('/audit?limit=50');
+    fill('#audit', audit, (a, tr) => tr.append(
+      cell(when(a.timestamp)), cell(a.status_code), cell(a.outcome), cell(a.key_prefix), cell(a.client_ip), cell(a.path), cell(a.detail)));
+  }
+
+  async function guard(fn) { try { msg(''); await fn(); } catch (e) { msg(e.message, true); } }
+  async function refresh() {
+    await guard(async () => {
+      await loadOverview(); await loadUsers(); await loadPricing(); await loadActivity();
+      $('#app').classList.remove('hidden'); msg('');
+    });
+  }
+  const formData = (f) => Object.fromEntries(new FormData(f).entries());
+
+  $('#login').addEventListener('submit', (e) => {
+    e.preventDefault(); token = $('#token').value.trim(); $('#token').value = '';
+    try { sessionStorage.setItem('adminToken', token); } catch (err) {}
+    refresh();
+  });
+  $('#logout').addEventListener('click', () => {
+    token = ''; try { sessionStorage.removeItem('adminToken'); } catch (err) {}
+    $('#app').classList.add('hidden'); msg('Signed out.');
+  });
+  $('#newUser').addEventListener('submit', (e) => {
+    e.preventDefault(); const d = formData(e.target);
+    guard(async () => {
+      const u = await api('/users', { method: 'POST', body: JSON.stringify({ email: d.email, initial_balance: d.initial_balance || '0' }) });
+      e.target.reset(); await openUser(u.id); await loadOverview();
+    });
+  });
+  $('#credit').addEventListener('submit', (e) => {
+    e.preventDefault(); const d = formData(e.target);
+    guard(async () => {
+      await api('/users/' + selected.id + '/credits', { method: 'POST', body: JSON.stringify({ amount: d.amount, note: d.note || null }) });
+      e.target.reset(); await openUser(selected.id);
+    });
+  });
+  $('#newKey').addEventListener('submit', (e) => {
+    e.preventDefault(); const d = formData(e.target);
+    guard(async () => {
+      const body = { provider: d.provider, name: d.name || null };
+      if (d.rate_limit_per_minute) body.rate_limit_per_minute = Number(d.rate_limit_per_minute);
+      const k = await api('/users/' + selected.id + '/keys', { method: 'POST', body: JSON.stringify(body) });
+      await openUser(selected.id);
+      const box = $('#newSecret'); box.textContent = 'New key (shown once, copy it now): ' + k.api_key; box.classList.remove('hidden');
+      e.target.reset();
+    });
+  });
+  $('#toggleStatus').addEventListener('click', () => guard(async () => {
+    const status = selected.status === 'active' ? 'suspended' : 'active';
+    await api('/users/' + selected.id, { method: 'PATCH', body: JSON.stringify({ status }) });
+    await openUser(selected.id);
+  }));
+  $('#pricing').addEventListener('submit', (e) => {
+    e.preventDefault(); const d = formData(e.target);
+    guard(async () => {
+      await api('/pricing', { method: 'PUT', body: JSON.stringify({
+        provider: d.provider, model: d.model || '*', fee_per_request: d.fee_per_request, fee_per_1k_tokens: d.fee_per_1k_tokens || '0' }) });
+      await loadPricing();
+    });
+  });
+
+  if (token) refresh(); else msg('Enter the admin token to load the dashboard.');
+})();
+</script>
+</body>
+</html>
