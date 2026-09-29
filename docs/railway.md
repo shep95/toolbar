@@ -88,7 +88,12 @@ create your first real user and issue their key.
 
 - **Replicas: keep at 1.** Rate limits and caches live in the app's memory. With more replicas, each enforces limits separately. See the README's known limitations before scaling out.
 - **Region:** put the app and PostgreSQL in the same region. Every request makes one database round trip.
-- **Stripe (optional):** set `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_SUCCESS_URL` and `STRIPE_CANCEL_URL`. Then in Stripe add a webhook to `https://<name>.up.railway.app/stripe/webhook` for `checkout.session.completed` and `checkout.session.async_payment_succeeded`.
+- **Stripe top-ups.** Users buy credit through Stripe Checkout, and the signed webhook adds it to their balance. The app needs:
+  - `STRIPE_SUCCESS_URL` = `https://<name>.up.railway.app/billing/success`, and `STRIPE_CANCEL_URL` = `https://<name>.up.railway.app/billing/cancel`. The app serves both pages.
+  - A webhook endpoint in Stripe pointing to `https://<name>.up.railway.app/stripe/webhook`, for the events `checkout.session.completed` and `checkout.session.async_payment_succeeded`. Put its signing secret (`whsec_...`) in `STRIPE_WEBHOOK_SECRET`.
+  - A **restricted** key (`rk_live_...`) in `STRIPE_SECRET_KEY`. In Stripe's dashboard go to **Developers → API keys → Create restricted key**, and set **Checkout Sessions** to **Write** and everything else to **None**. If a checkout then fails with a permissions error in the app's logs, also give **Products** and **Prices** Write.
+
+  Sales of your other products on the same Stripe account are ignored: only sessions this app created credit anything.
 - **Backups:** the PostgreSQL service has a **Backups** tab. Turn backups on, since the database holds every balance.
 
 ## Troubleshooting
