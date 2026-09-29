@@ -38,6 +38,10 @@ def main() -> int:
         "--assume-https", action="store_true",
         help="send X-Forwarded-Proto: https (only for testing a local container without a TLS proxy)",
     )
+    parser.add_argument(
+        "--wait-seconds", type=int, default=0,
+        help="first wait up to this long for the app to be ready and every --model provider to be configured",
+    )
     args = parser.parse_args()
     if not args.admin_token:
         parser.error("pass --admin-token or set ADMIN_API_TOKEN")
@@ -46,6 +50,7 @@ def main() -> int:
     extra = {"X-Forwarded-Proto": "https"} if args.assume_https else {}
     c = httpx.Client(base_url=base, headers=extra, timeout=60, follow_redirects=False)
     admin = {"Authorization": f"Bearer {args.admin_token}"}
+    wait_until_ready(c, admin, [m.split("/", 1)[0] for m in args.model], args.wait_seconds)
     created_users: list[str] = []
     created_keys: list[str] = []
 
@@ -151,6 +156,21 @@ def main() -> int:
             if r is not None:
                 check("revoked key stops working", r.status_code == 401, f"HTTP {r.status_code}")
     return summary()
+
+
+def wait_until_ready(c: httpx.Client, admin: dict, providers: list[str], seconds: int) -> None:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            if c.get("/readyz").status_code == 200:
+                r = c.get("/admin/api/overview", headers=admin)
+                configured = {n for n, p in r.json().get("providers", {}).items() if p["configured"]} if r.status_code == 200 else set()
+                if r.status_code == 200 and set(providers) <= configured:
+                    return
+        except (httpx.HTTPError, ValueError):
+            pass
+        print("waiting for the deployment to be ready...", flush=True)
+        time.sleep(5)
 
 
 def summary() -> int:
