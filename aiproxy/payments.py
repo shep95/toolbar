@@ -127,7 +127,9 @@ async def create_checkout(request: Request) -> Response:
 async def stripe_webhook(request: Request) -> Response:
     services = get_services(request)
     settings = services.settings
-    if not settings.stripe_enabled:
+    # Crediting only needs the signing secret; the API key is only used to
+    # create checkout sessions.
+    if not settings.stripe_webhook_secret:
         return JSONResponse({"error": "payments disabled"}, status_code=503)
     payload = b""
     async for chunk in request.stream():
@@ -190,3 +192,48 @@ async def stripe_webhook(request: Request) -> Response:
 
     log.info("balance topped up", extra={"event": "stripe_topup", "user_id": str(user_id), "amount": str(amount)})
     return JSONResponse({"received": True, "credited": str(amount)})
+
+
+# --------------------------------------------------------------------- return pages
+
+_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex"><link rel="icon" href="data:,"><title>{title}</title>
+<style>
+:root {{ --bg:#f6f7f9; --panel:#fff; --text:#1b1f24; --muted:#5f6b7a; --accent:{accent}; }}
+@media (prefers-color-scheme: dark) {{ :root {{ --bg:#111418; --panel:#1a1e24; --text:#e6e9ee; --muted:#9aa5b3; }} }}
+body {{ margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--text);
+       font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; padding:16px; box-sizing:border-box; }}
+main {{ background:var(--panel); border-radius:12px; padding:32px; max-width:440px; text-align:center;
+       box-shadow:0 1px 3px rgba(0,0,0,.12); }}
+h1 {{ font-size:22px; margin:0 0 8px; color:var(--accent); }}
+p {{ margin:0; color:var(--muted); }}
+</style></head>
+<body><main><h1>{title}</h1><p>{message}</p></main></body></html>"""
+
+_PAGE_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'",
+    "Cache-Control": "no-store",
+}
+
+
+@router.get("/billing/success", include_in_schema=False)
+async def checkout_success() -> Response:
+    # Deliberately static: the balance is credited by the signed webhook, never
+    # by a visit to this page, so the page reads nothing from the URL.
+    html = _PAGE.format(
+        title="Payment received",
+        accent="#1f8a4c",
+        message="Thank you. Your API credit is added to your balance within a few seconds. You can close this page.",
+    )
+    return Response(html, media_type="text/html; charset=utf-8", headers=_PAGE_HEADERS)
+
+
+@router.get("/billing/cancel", include_in_schema=False)
+async def checkout_cancel() -> Response:
+    html = _PAGE.format(
+        title="Payment cancelled",
+        accent="#b7791f",
+        message="No payment was taken and your balance is unchanged. You can close this page.",
+    )
+    return Response(html, media_type="text/html; charset=utf-8", headers=_PAGE_HEADERS)

@@ -12,6 +12,7 @@ from decimal import Decimal
 from urllib.parse import parse_qs
 
 import httpx
+import pytest
 from sqlalchemy import select
 
 from aiproxy.connectors import Usage
@@ -267,3 +268,35 @@ async def test_user_model_rejects_money_as_float_drift(database):
             u.balance = Decimal(u.balance) + Decimal("0.03")
     async with database.session() as s:
         assert Decimal((await s.get(User, user.id)).balance) == Decimal("3.00")
+
+
+async def test_checkout_return_pages(client, database):
+    ok = await client.get("/billing/success", params={"session_id": "cs_test_<script>alert(1)</script>"})
+    assert ok.status_code == 200 and "Payment received" in ok.text
+    assert "<script>" not in ok.text  # the page never echoes the URL
+    assert "default-src 'none'" in ok.headers["content-security-policy"]
+    cancel = await client.get("/billing/cancel")
+    assert cancel.status_code == 200 and "No payment was taken" in cancel.text
+    async with database.session() as s:  # visiting the page never credits anything
+        assert (await s.execute(select(BalanceAdjustment))).scalars().all() == []
+
+
+@pytest.mark.parametrize("settings_overrides", [{"stripe_secret_key": None}])
+async def test_webhook_credits_with_only_the_signing_secret(client, make_user, database):
+    user, key = await make_user(balance="0")
+    payload = checkout_event(user["id"], session_id="cs_only_whsec")
+    r = await client.post("/stripe/webhook", content=payload, headers={"Stripe-Signature": sign_stripe_payload(payload, "whsec_test")})
+    assert r.json()["credited"] == "20"
+    # Starting a checkout still needs the API key.
+    r = await client.post("/v1/billing/checkout", json={"amount_usd": 10}, headers=auth(key))
+    assert r.status_code == 503
+
+
+async def test_other_stripe_sales_are_ignored(client, make_user, database):
+    user, _ = await make_user(balance="0")
+    event = json.loads(checkout_event(user["id"], session_id="cs_other_product"))
+    event["data"]["object"]["metadata"] = {"order": "t-shirt"}  # a sale from another product on the same account
+    payload = json.dumps(event).encode()
+    r = await client.post("/stripe/webhook", content=payload, headers={"Stripe-Signature": sign_stripe_payload(payload, "whsec_test")})
+    assert r.status_code == 200 and r.json()["ignored"] == "not a paid top-up"
+    assert await balance_of(database, user) == Decimal("0")
